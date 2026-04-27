@@ -718,10 +718,17 @@ CRITICAL STYLE GUIDELINES:
         Analyzes script text and generates storyboard frames using Prompt B (Storyboard Director).
         Returns a list of frame dictionaries with visual atoms.
         """
-        logger.info(f"Analyzing text to storyboard: {text[:100]}...")
-        
+        logger.info(
+            f"[analyze_to_storyboard] provider={self.llm.provider} "
+            f"input_chars={len(text)} configured={self.is_configured}"
+        )
+
         if not self.is_configured:
-            logger.warning("DASHSCOPE_API_KEY not set. Returning mock frames.")
+            logger.warning(
+                f"LLM provider={self.llm.provider!r} not configured "
+                f"(LOCAL_LLM_HF_ID/DASHSCOPE_API_KEY/OPENAI_API_KEY missing). "
+                f"Returning mock frames."
+            )
             return self._mock_storyboard_frames(text)
         
         # Build entities context
@@ -811,12 +818,22 @@ Props:
 """
 
         try:
+            import time as _time
+            logger.info(
+                f"[analyze_to_storyboard] calling LLM ({self.llm.provider}) "
+                f"prompt_chars={len(system_prompt)}..."
+            )
+            t0 = _time.monotonic()
             content = self.llm.chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": "请开始生成分镜帧列表，确保覆盖剧本中的所有内容。"}
                 ],
             ).strip()
+            logger.info(
+                f"[analyze_to_storyboard] LLM returned in {_time.monotonic()-t0:.1f}s "
+                f"response_chars={len(content)}"
+            )
             logger.debug(f"Storyboard Analysis Raw Response: {content[:500]}...")
 
             frames = self._parse_storyboard_json(content)

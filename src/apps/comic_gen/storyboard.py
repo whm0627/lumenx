@@ -11,8 +11,27 @@ logger = get_logger(__name__)
 class StoryboardGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
-        self.model = WanxImageModel(self.config.get('model', {}))
+        self.model = self._build_model(self.config.get('model', {}))
         self.output_dir = self.config.get('output_dir', 'output/storyboard')
+
+    @staticmethod
+    def _build_model(model_config: Dict[str, Any]):
+        """Pick image-gen backend based on IMAGE_PROVIDER env var.
+
+        Mirrors AssetGenerator._build_model so storyboard frame renders go
+        through the same local runtime (and the same singleton manager,
+        sharing pipe state + GPULock) as character/asset generation. With
+        IMAGE_PROVIDER=local, ref-conditioned frame renders auto-route to
+        Qwen-Image-Edit-2509 via the manager's internal dispatch."""
+        provider = os.getenv("IMAGE_PROVIDER", "wanx").lower()
+        if provider == "local":
+            from ...img_local.manager import ImageModelManager
+            return ImageModelManager.get(model_config)
+        if provider == "wanx":
+            return WanxImageModel(model_config)
+        raise ValueError(
+            f"Unknown IMAGE_PROVIDER={provider!r}; expected 'wanx' or 'local'"
+        )
 
     def generate_storyboard(self, script: Any) -> Any:
         """Generates images for all frames in the storyboard."""

@@ -3,6 +3,7 @@ import { ImageAsset, ImageVariant } from '@/store/projectStore';
 import { Trash2, Check, ChevronLeft, ChevronRight, Layers, X, Maximize2, Star } from 'lucide-react';
 import { API_URL } from '@/lib/api';
 import { getAssetUrl } from '@/lib/utils';
+import { useLocalImageStatus, formatLocalImageStatus } from '@/lib/useLocalImageStatus';
 
 interface VariantSelectorProps {
     asset: ImageAsset | undefined;
@@ -11,6 +12,7 @@ interface VariantSelectorProps {
     onDelete: (variantId: string) => void;
     onFavorite?: (variantId: string, isFavorited: boolean) => void;
     onGenerate: (batchSize: number) => void;
+    onCancel?: () => void;  // Optional: clears the spinner / generating state
     isGenerating: boolean;
     generatingBatchSize?: number; // Persisted batch size from parent/store
     className?: string;
@@ -27,6 +29,7 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
     onDelete,
     onFavorite,
     onGenerate,
+    onCancel,
     isGenerating,
     generatingBatchSize: propGeneratingBatchSize,
     className = "",
@@ -109,14 +112,7 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
                     )}
                 </div>
 
-                {isGenerating && (
-                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-sm">
-                        <div className="flex flex-col items-center gap-3">
-                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
-                            <span className="text-white font-medium">Generating {displayGeneratingBatchSize} variant{displayGeneratingBatchSize > 1 ? 's' : ''}...</span>
-                        </div>
-                    </div>
-                )}
+                {isGenerating && <SpinnerOverlay batchSize={displayGeneratingBatchSize} onCancel={onCancel} />}
             </div>
 
             {/* Controls & Filmstrip */}
@@ -254,3 +250,51 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
         </div>
     );
 };
+
+/**
+ * Spinner overlay rendered while a generation is in flight. Subscribes to
+ * /img/local/status so the user sees the actual phase + percentage, not
+ * just a static "Generating..." label.
+ */
+function SpinnerOverlay({
+    batchSize,
+    onCancel,
+}: {
+    batchSize: number;
+    onCancel?: () => void;
+}) {
+    const status = useLocalImageStatus(true);
+    const label = formatLocalImageStatus(status);
+    const pct = status && status.progress > 0 && status.progress < 1
+        ? Math.round(status.progress * 100)
+        : null;
+
+    return (
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-3 w-3/4 max-w-xs">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white" />
+                <span className="text-white font-medium text-center">{label}</span>
+                {pct !== null && (
+                    <div className="w-full h-1.5 bg-white/15 rounded overflow-hidden">
+                        <div
+                            className="h-full bg-primary transition-all"
+                            style={{ width: `${pct}%` }}
+                        />
+                    </div>
+                )}
+                <span className="text-white/60 text-xs">
+                    Batch: {batchSize} variant{batchSize > 1 ? 's' : ''}
+                </span>
+                {onCancel && (
+                    <button
+                        onClick={(e) => { e.stopPropagation(); onCancel(); }}
+                        className="mt-1 px-3 py-1 bg-red-500/80 hover:bg-red-600 text-white text-xs rounded-md flex items-center gap-1.5 transition-colors"
+                        title="Cancel / clear stuck generation"
+                    >
+                        <X size={12} /> Cancel
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+}

@@ -47,9 +47,33 @@ ASPECT_RATIO_TO_SIZE = {
 class AssetGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
-        # Default to Wanx for now, can be swapped based on config
-        self.model = WanxImageModel(self.config.get('model', {}))
+        self.model = self._build_model(self.config.get('model', {}))
         self.output_dir = self.config.get('output_dir', 'output/assets')
+
+    def _label_phase(self, label: str, idx: int = 0, total: int = 1) -> None:
+        """Tell the underlying model what we're about to generate so the UI
+        can show 'Generating full_body 1/2 — 35%' instead of three identical
+        0..100% bars in a row. Duck-typed: cloud providers (Wanx) ignore it."""
+        if hasattr(self.model, "set_generation_label"):
+            human = label if total == 1 else f"{label} {idx + 1}/{total}"
+            self.model.set_generation_label(human)
+
+    @staticmethod
+    def _build_model(model_config: Dict[str, Any]):
+        """Pick image-gen backend based on IMAGE_PROVIDER env var.
+
+        For 'local' we route through ImageModelManager (singleton) so the
+        global status footer can observe load/error state from the same
+        runtime that AssetGenerator drives."""
+        provider = os.getenv("IMAGE_PROVIDER", "wanx").lower()
+        if provider == "local":
+            from ...img_local.manager import ImageModelManager
+            return ImageModelManager.get(model_config)
+        if provider == "wanx":
+            return WanxImageModel(model_config)
+        raise ValueError(
+            f"Unknown IMAGE_PROVIDER={provider!r}; expected 'wanx' or 'local'"
+        )
 
     def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None) -> Character:
         """
@@ -147,6 +171,7 @@ class AssetGenerator:
                                 effective_generation_prompt = f"{reverse_enhancement}{generation_prompt}"
                                 logger.debug(f"Reverse generation enhanced prompt: {effective_generation_prompt[:100]}...")
                         
+                        self._label_phase("full_body", i, batch_size)
                         self.model.generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=negative_prompt, model_name=effective_model_name, size=effective_size)
                         
                         rel_fullbody_path = os.path.relpath(fullbody_path, "output")
@@ -295,6 +320,7 @@ class AssetGenerator:
                         variant_id = str(uuid.uuid4())
                         sheet_path = os.path.join(self.output_dir, 'characters', f"{character.id}_sheet_{variant_id}.png")
                         
+                        self._label_phase("three_view", i, batch_size)
                         self.model.generate(generation_prompt, sheet_path, ref_image_path=fullbody_path, negative_prompt=sheet_negative, ref_strength=0.8, model_name=i2i_model_name)
                         
                         rel_sheet_path = os.path.relpath(sheet_path, "output")
@@ -371,6 +397,7 @@ class AssetGenerator:
                         variant_id = str(uuid.uuid4())
                         avatar_path = os.path.join(self.output_dir, 'characters', f"{character.id}_avatar_{variant_id}.png")
                         
+                        self._label_phase("headshot", i, batch_size)
                         self.model.generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=negative_prompt, ref_strength=0.8, model_name=i2i_model_name)
                         
                         rel_avatar_path = os.path.relpath(avatar_path, "output")

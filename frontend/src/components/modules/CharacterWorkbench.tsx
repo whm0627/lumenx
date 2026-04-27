@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useLocalImageStatus } from "@/lib/useLocalImageStatus";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, RefreshCw, Check, AlertTriangle, Image as ImageIcon, Lock, Unlock, ChevronRight, Maximize2, Video } from "lucide-react";
 import { api, API_URL } from "@/lib/api";
@@ -17,6 +18,7 @@ interface CharacterWorkbenchProps {
     onClose: () => void;
     onUpdateDescription: (desc: string) => void;
     onGenerate: (type: string, prompt: string, applyStyle: boolean, negativePrompt: string, batchSize: number) => void;
+    onCancelGenerate?: (type: string) => void;
     generatingTypes: { type: string; batchSize: number }[];
     stylePrompt?: string;
     styleNegativePrompt?: string;
@@ -25,7 +27,7 @@ interface CharacterWorkbenchProps {
     isGeneratingVideo?: boolean;
 }
 
-export default function CharacterWorkbench({ asset, onClose, onUpdateDescription, onGenerate, generatingTypes = [], stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo }: CharacterWorkbenchProps) {
+export default function CharacterWorkbench({ asset, onClose, onUpdateDescription, onGenerate, onCancelGenerate, generatingTypes = [], stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo }: CharacterWorkbenchProps) {
     const [activePanel, setActivePanel] = useState<"full_body" | "three_view" | "headshot" | "video">("full_body");
     const updateProject = useProjectStore(state => state.updateProject);
     const currentProject = useProjectStore(state => state.currentProject);
@@ -246,13 +248,35 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
         onGenerate(type, prompt, applyStyle, negativePrompt, batchSize);
     };
 
-    // Helper to check if a specific type is generating
+    // Live status drives sub-phase routing when an "all" task is running:
+    // backend tells us *which* of (full_body / three_view / headshot) is
+    // actively generating, and only that tile shows the spinner.
+    const anyTask = Array.isArray(generatingTypes) && generatingTypes.length > 0;
+    const liveStatus = useLocalImageStatus(anyTask);
+
     const getGeneratingInfo = (type: string) => {
         if (!Array.isArray(generatingTypes) || generatingTypes.length === 0) {
             return { isGenerating: false, batchSize: 1 };
         }
-        const task = generatingTypes.find(t => t?.type === type || t?.type === "all");
-        return task ? { isGenerating: true, batchSize: task.batchSize || 1 } : { isGenerating: false, batchSize: 1 };
+        // Specific-type task → always spin that tile.
+        const exact = generatingTypes.find(t => t?.type === type);
+        if (exact) {
+            return { isGenerating: true, batchSize: exact.batchSize || 1 };
+        }
+        // "all" task → only spin the tile matching the backend's current
+        // phase. While the model is loading / downloading (no GENERATING
+        // signal yet), spin all so the user sees something is happening.
+        const allTask = generatingTypes.find(t => t?.type === "all");
+        if (!allTask) return { isGenerating: false, batchSize: 1 };
+        const isGenerating = liveStatus?.state === "GENERATING";
+        if (!isGenerating) {
+            // Pre-generate phase (DOWNLOADING / LOADING) — show on all tiles
+            return { isGenerating: true, batchSize: allTask.batchSize || 1 };
+        }
+        const phaseMatches = (liveStatus?.phase_label || "").startsWith(type);
+        return phaseMatches
+            ? { isGenerating: true, batchSize: allTask.batchSize || 1 }
+            : { isGenerating: false, batchSize: 1 };
     };
 
     const handleSelectVariant = async (type: "full_body" | "three_view" | "headshot", variantId: string) => {
@@ -326,6 +350,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         prompt={fullBodyPrompt}
                         setPrompt={setFullBodyPrompt}
                         onGenerate={(batchSize: number) => handleGenerateClick("full_body", batchSize)}
+                        onCancel={onCancelGenerate ? () => onCancelGenerate("full_body") : undefined}
                         isGenerating={getGeneratingInfo("full_body").isGenerating}
                         generatingBatchSize={getGeneratingInfo("full_body").batchSize}
                         description="The primary reference for character consistency."
@@ -373,6 +398,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         prompt={threeViewPrompt}
                         setPrompt={setThreeViewPrompt}
                         onGenerate={(batchSize: number) => handleGenerateClick("three_view", batchSize)}
+                        onCancel={onCancelGenerate ? () => onCancelGenerate("three_view") : undefined}
                         isGenerating={getGeneratingInfo("three_view").isGenerating}
                         generatingBatchSize={getGeneratingInfo("three_view").batchSize}
                         isLocked={!asset.full_body_image_url && !hasAnyUpload}
@@ -400,6 +426,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         prompt={headshotPrompt}
                         setPrompt={setHeadshotPrompt}
                         onGenerate={(batchSize: number) => handleGenerateClick("headshot", batchSize)}
+                        onCancel={onCancelGenerate ? () => onCancelGenerate("headshot") : undefined}
                         isGenerating={getGeneratingInfo("headshot").isGenerating}
                         generatingBatchSize={getGeneratingInfo("headshot").batchSize}
                         isLocked={!asset.full_body_image_url && !hasAnyUpload}
@@ -527,6 +554,7 @@ function WorkbenchPanel({
     prompt,
     setPrompt,
     onGenerate,
+    onCancel,
     isGenerating,
     generatingBatchSize,
     status,
@@ -788,6 +816,7 @@ function WorkbenchPanel({
                             onDelete={onDelete}
                             onFavorite={onFavorite}
                             onGenerate={onGenerate}
+                            onCancel={onCancel}
                             isGenerating={isGenerating}
                             generatingBatchSize={generatingBatchSize}
                             aspectRatio={aspectRatio}

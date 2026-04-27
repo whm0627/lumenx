@@ -12,7 +12,9 @@ export default function AppShell({ activeTab, onTabChange, children }: AppShellP
   return (
     <div className="flex h-full w-full">
       <GlobalSidebar activeTab={activeTab} onTabChange={onTabChange} />
-      <div className="flex-1 overflow-y-auto">{children}</div>
+      {/* pb-14 leaves a 56px gutter at the bottom of the scrollable area
+          so the (fixed-mounted) status footer never covers the last line. */}
+      <div className="flex-1 overflow-y-auto pb-14">{children}</div>
     </div>
   );
 }

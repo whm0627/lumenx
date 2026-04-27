@@ -115,7 +115,12 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                     {T2I_MODELS.map((model) => (
                                         <button
                                             key={model.id}
-                                            onClick={() => setT2iModel(model.id)}
+                                            onClick={() => {
+                                                setT2iModel(model.id);
+                                                // Switching to a Wan card flips the global provider
+                                                // back to cloud — fire-and-forget; failure is non-fatal.
+                                                api.saveEnvConfig({ IMAGE_PROVIDER: "wanx" }).catch(() => { });
+                                            }}
                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${t2iModel === model.id
                                                     ? 'border-green-500/50 bg-green-500/10'
                                                     : 'border-white/10 hover:border-white/20 bg-white/5'
@@ -130,6 +135,30 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             <span className="text-xs text-gray-500">{model.description}</span>
                                         </button>
                                     ))}
+                                    {/* Local: Qwen-Image — selecting this flips IMAGE_PROVIDER=local
+                                        and kicks off the load (download on first use). The footer
+                                        shows progress; this card just commits the selection. */}
+                                    <button
+                                        key="local-qwen-image"
+                                        onClick={() => {
+                                            setT2iModel("local-qwen-image");
+                                            api.saveEnvConfig({ IMAGE_PROVIDER: "local" }).catch(() => { });
+                                            // Fire load in background; footer reflects progress.
+                                            api.loadLocalImage().catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${t2iModel === "local-qwen-image"
+                                                ? 'border-purple-500/50 bg-purple-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {t2iModel === "local-qwen-image" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-purple-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">Qwen-Image (Local)</span>
+                                        <span className="text-xs text-gray-500">20B local · ~13GB · int8</span>
+                                    </button>
                                 </div>
                             </div>
 
@@ -219,7 +248,11 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                     {I2I_MODELS.map((model) => (
                                         <button
                                             key={model.id}
-                                            onClick={() => setI2iModel(model.id)}
+                                            onClick={() => {
+                                                setI2iModel(model.id);
+                                                // Pick a Wan card → flip global provider back to cloud.
+                                                api.saveEnvConfig({ IMAGE_PROVIDER: "wanx" }).catch(() => { });
+                                            }}
                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${i2iModel === model.id
                                                     ? 'border-blue-500/50 bg-blue-500/10'
                                                     : 'border-white/10 hover:border-white/20 bg-white/5'
@@ -234,6 +267,31 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             <span className="text-xs text-gray-500">{model.description}</span>
                                         </button>
                                     ))}
+                                    {/* Local: Qwen-Image-Edit-2509 — purpose-built for reference-
+                                        conditioned generation (variants, view sheets, pose changes
+                                        keeping the same character). Picking either local card
+                                        (T2I or I2I) flips IMAGE_PROVIDER=local globally; the
+                                        backend then auto-routes by whether refs are present. */}
+                                    <button
+                                        key="local-qwen-image-edit"
+                                        onClick={() => {
+                                            setI2iModel("local-qwen-image-edit");
+                                            api.saveEnvConfig({ IMAGE_PROVIDER: "local" }).catch(() => { });
+                                            api.loadLocalImage().catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${i2iModel === "local-qwen-image-edit"
+                                                ? 'border-purple-500/50 bg-purple-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {i2iModel === "local-qwen-image-edit" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-purple-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">Qwen-Image-Edit (Local)</span>
+                                        <span className="text-xs text-gray-500">2509 multi-ref · ~17GB · int8</span>
+                                    </button>
                                 </div>
                             </div>
 

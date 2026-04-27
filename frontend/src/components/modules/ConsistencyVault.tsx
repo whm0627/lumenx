@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Paintbrush, User, MapPin, Box, Lock, Unlock, RefreshCw, Upload, Image as ImageIcon, X, Check, Settings, ChevronRight, Trash2, Plus, Link as LinkIcon } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import { api, API_URL, crudApi } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
+import { useLocalImageStatus, formatLocalImageStatus } from "@/lib/useLocalImageStatus";
 import CharacterWorkbench from "./CharacterWorkbench";
 import { VariantSelector } from "../common/VariantSelector";
 import { VideoVariantSelector } from "../common/VideoVariantSelector";
@@ -35,6 +36,36 @@ export default function ConsistencyVault() {
     // Upload modal state
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [uploadTarget, setUploadTarget] = useState<{ id: string; type: string; name: string; description: string } | null>(null);
+
+    // Track active polling intervals so user-initiated Cancel can stop them.
+    // Key: `${assetId}::${generationType}` -> interval id.
+    const pollIntervalsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+
+    // Auto-recovery: if the image runtime says READY for a sustained window
+    // but localStorage still has tasks with no live poll attached (typically
+    // because a browser refresh dropped the in-memory setInterval), clear the
+    // stale tasks so the spinner overlay disappears and the Generate button
+    // becomes usable again. 5s grace avoids racing the brief READY moment
+    // between phases of a multi-step "all" generation.
+    const liveImageStatus = useLocalImageStatus((generatingTasks?.length ?? 0) > 0);
+    const readySinceRef = useRef<number | null>(null);
+    useEffect(() => {
+        if (!liveImageStatus) return;
+        const tasks = generatingTasks || [];
+        if (liveImageStatus.state === "READY" && tasks.length > 0) {
+            if (readySinceRef.current === null) readySinceRef.current = Date.now();
+            const stale = tasks.filter((t: any) => {
+                const key = `${t.assetId}::${t.generationType}`;
+                return !pollIntervalsRef.current.has(key);
+            });
+            if (Date.now() - (readySinceRef.current ?? 0) > 5000 && stale.length > 0 && removeGeneratingTask) {
+                stale.forEach((t: any) => removeGeneratingTask(t.assetId, t.generationType));
+                readySinceRef.current = null;
+            }
+        } else {
+            readySinceRef.current = null;
+        }
+    }, [liveImageStatus, generatingTasks, removeGeneratingTask]);
 
     // Derive selected asset from currentProject
     const selectedAsset = currentProject ? (() => {
@@ -99,6 +130,7 @@ export default function ConsistencyVault() {
 
             // Start polling if we got a task_id
             if (taskId) {
+                const pollKey = `${assetId}::${generationType}`;
                 const pollInterval = setInterval(async () => {
                     try {
                         const status = await api.getTaskStatus(taskId);
@@ -106,6 +138,7 @@ export default function ConsistencyVault() {
 
                         if (status.status === "completed") {
                             clearInterval(pollInterval);
+                            pollIntervalsRef.current.delete(pollKey);
                             // Refresh project data
                             const updatedProject = await api.getProject(currentProject.id);
                             updateProject(currentProject.id, updatedProject);
@@ -116,6 +149,7 @@ export default function ConsistencyVault() {
                             }
                         } else if (status.status === "failed") {
                             clearInterval(pollInterval);
+                            pollIntervalsRef.current.delete(pollKey);
                             console.error("Asset generation failed:", status.error);
                             alert(status.error || '生成失败，请稍后重试');
 
@@ -135,12 +169,15 @@ export default function ConsistencyVault() {
                     } catch (pollError: any) {
                         console.error("Polling error:", pollError);
                         clearInterval(pollInterval);
+                        pollIntervalsRef.current.delete(pollKey);
                         alert(`轮询任务状态失败: ${pollError.message || '网络错误'}`);
                         if (removeGeneratingTask) {
                             removeGeneratingTask(assetId, generationType);
                         }
                     }
                 }, 2000); // Poll every 2 seconds
+                // Register so Cancel can stop this poller from outside.
+                pollIntervalsRef.current.set(pollKey, pollInterval);
             } else {
                 // Fallback: no task_id means sync response (shouldn't happen, but just in case)
                 console.warn("[handleGenerate] No task_id in response, falling back to sync mode");
@@ -157,6 +194,30 @@ export default function ConsistencyVault() {
                 removeGeneratingTask(assetId, generationType);
             }
         }
+    };
+
+    // Cancel any stuck-or-running generation for this asset. Clears every
+    // generatingTask entry for the asset (regardless of generationType) so
+    // a previously-orphaned task — e.g. one started with "all" from the
+    // AssetCard before a refresh — is also wiped, not just one matching
+    // the type the user clicked from. Stops any active poll timers too.
+    // Best-effort: if a backend task is still running, we only forget it
+    // on the client side.
+    const handleCancelGenerate = (assetId: string, _generationType?: string) => {
+        const tasksForAsset = (generatingTasks || []).filter(
+            (t: any) => t.assetId === assetId,
+        );
+        tasksForAsset.forEach((t: any) => {
+            const key = `${assetId}::${t.generationType}`;
+            const interval = pollIntervalsRef.current.get(key);
+            if (interval) {
+                clearInterval(interval);
+                pollIntervalsRef.current.delete(key);
+            }
+            if (removeGeneratingTask) {
+                removeGeneratingTask(assetId, t.generationType);
+            }
+        });
     };
 
     // Delete asset handler
@@ -419,6 +480,7 @@ export default function ConsistencyVault() {
                                 type={activeTab}
                                 isGenerating={isAssetGenerating(asset.id)}
                                 onGenerate={() => handleGenerate(asset.id, activeTab)}
+                                onCancelGenerate={() => handleCancelGenerate(asset.id)}
                                 onToggleLock={() => api.toggleAssetLock(currentProject.id, asset.id, activeTab).then(updated => updateProject(currentProject.id, updated))}
                                 onClick={() => {
                                     setSelectedAssetId(asset.id);
@@ -457,6 +519,7 @@ export default function ConsistencyVault() {
                             }}
                             onUpdateDescription={(desc: string) => handleUpdateDescription(selectedAssetId, selectedAssetType, desc)}
                             onGenerate={(type: string, prompt: string, applyStyle: boolean, negativePrompt: string, batchSize: number) => handleGenerate(selectedAssetId, selectedAssetType, type, prompt, applyStyle, negativePrompt, batchSize)}
+                            onCancelGenerate={(type: string) => handleCancelGenerate(selectedAssetId, type)}
                             generatingTypes={getAssetGeneratingTypes(selectedAssetId)}
                             stylePrompt={currentProject?.art_direction?.style_config?.positive_prompt || ""}
                             styleNegativePrompt={currentProject?.art_direction?.style_config?.negative_prompt || ""}
@@ -473,6 +536,7 @@ export default function ConsistencyVault() {
                             }}
                             onUpdateDescription={(desc: string) => handleUpdateDescription(selectedAssetId, selectedAssetType, desc)}
                             onGenerate={(applyStyle: boolean, negativePrompt: string, batchSize: number) => handleGenerate(selectedAssetId, selectedAssetType, "all", "", applyStyle, negativePrompt, batchSize)}
+                            onCancelGenerate={() => handleCancelGenerate(selectedAssetId, "all")}
                             isGenerating={isAssetGenerating(selectedAssetId)}
                             stylePrompt={currentProject?.art_direction?.style_config?.positive_prompt || ""}
                             styleNegativePrompt={currentProject?.art_direction?.style_config?.negative_prompt || ""}
@@ -517,7 +581,7 @@ export default function ConsistencyVault() {
     );
 }
 
-function CharacterDetailModal({ asset, type, onClose, onUpdateDescription, onGenerate, isGenerating, stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo }: any) {
+function CharacterDetailModal({ asset, type, onClose, onUpdateDescription, onGenerate, onCancelGenerate, isGenerating, stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo }: any) {
     const [description, setDescription] = useState(asset.description);
     const [isEditing, setIsEditing] = useState(false);
     const currentProject = useProjectStore((state) => state.currentProject);
@@ -611,6 +675,7 @@ function CharacterDetailModal({ asset, type, onClose, onUpdateDescription, onGen
                                 onSelect={handleSelectVariant}
                                 onDelete={handleDeleteVariant}
                                 onGenerate={handleGenerateClick}
+                                onCancel={onCancelGenerate}
                                 isGenerating={isGenerating}
                                 aspectRatio="16:9"
                                 className="h-full"
@@ -826,7 +891,7 @@ function ImageWithRetry({ src, alt, className }: { src: string, alt: string, cla
     );
 }
 
-function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClick, onDelete, onUpload }: any) {
+function AssetCard({ asset, type, isGenerating, onGenerate, onCancelGenerate, onToggleLock, onClick, onDelete, onUpload }: any) {
     const isLocked = asset.locked || false;
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
@@ -879,10 +944,7 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
 
             {/* Loading Overlay */}
             {isGenerating && (
-                <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm flex items-center justify-center flex-col gap-2">
-                    <RefreshCw className="animate-spin text-primary" size={32} />
-                    <span className="text-xs font-mono text-primary">Generating...</span>
-                </div>
+                <AssetCardOverlay onCancel={onCancelGenerate} />
             )}
 
             {/* Top Actions Overlay */}
@@ -1029,6 +1091,39 @@ function CreateAssetDialog({ type, onClose, onCreate }: { type: string; onClose:
                     </button>
                 </div>
             </motion.div>
+        </div>
+    );
+}
+
+/**
+ * AssetCard's "Generating..." overlay. Subscribes to /img/local/status so
+ * the user sees the live phase + percentage instead of a static spinner.
+ */
+function AssetCardOverlay({ onCancel }: { onCancel?: () => void }) {
+    const status = useLocalImageStatus(true);
+    const label = formatLocalImageStatus(status);
+    const pct = status && status.progress > 0 && status.progress < 1
+        ? Math.round(status.progress * 100)
+        : null;
+
+    return (
+        <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm flex items-center justify-center flex-col gap-2 px-4">
+            <RefreshCw className="animate-spin text-primary" size={32} />
+            <span className="text-xs font-mono text-primary text-center">{label}</span>
+            {pct !== null && (
+                <div className="w-full max-w-[160px] h-1.5 bg-white/15 rounded overflow-hidden">
+                    <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+                </div>
+            )}
+            {onCancel && (
+                <button
+                    onClick={(e) => { e.stopPropagation(); onCancel(); }}
+                    className="mt-2 px-3 py-1 bg-red-500/80 hover:bg-red-600 text-white text-xs rounded-md flex items-center gap-1.5 transition-colors"
+                    title="Cancel / clear stuck generation"
+                >
+                    <X size={12} /> Cancel
+                </button>
+            )}
         </div>
     );
 }

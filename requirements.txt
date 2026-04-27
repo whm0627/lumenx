@@ -35,7 +35,14 @@ pytest>=7.4.0
 pytest-asyncio>=0.23.0
 llama-cpp-python>=0.3.0
 
-# Optional Dependencies
-# Uncomment if needed:
-# numpy>=1.24.0
-# pillow>=10.0.0
+# Local Image Generation (Qwen-Image via diffusers + int8 quant)
+diffusers>=0.31.0
+# torchao >= 0.10 requires torch >= 2.6 (uses torch.int1).
+# Keep <0.10 while we're on torch 2.5.x.
+torchao>=0.7,<0.10
+Pillow>=10.0.0
+# Required by Qwen2.5-VL video processor (used by Qwen-Image-Edit-2509
+# Plus pipeline). Torchvision must match the installed torch CUDA build:
+# install with --index-url https://download.pytorch.org/whl/cu121 on
+# torch 2.5.x + CUDA 12.1.
+torchvision>=0.20,<0.21

@@ -9,9 +9,12 @@ import time
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
+from ..utils.gpu_lock import GPULock
 from .config import LocalLLMConfig
 from .runtime import LocalRuntime
 from .vram import QuantMode, detect_vram_total_mb, estimate_model_size_b, pick_quant_for_model
+
+GPU_LOCK_NAME = "llm"
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,10 @@ class ModelManager:
         # the executor wrapper, used by cancel() for ctypes async-raise).
         self._loader_thread_id: Optional[int] = None
         self._cancel_requested = False
+        # Register with GPULock so the image runtime (or any other) can
+        # evict us before claiming VRAM. Eviction calls unload_sync from
+        # whichever thread the evictor runs on.
+        GPULock.get().register(GPU_LOCK_NAME, self.unload_sync)
 
     # ---- singleton accessor used by LLMAdapter ----
 
@@ -293,6 +300,10 @@ class ModelManager:
     async def _load_locked(self) -> None:
         if self._state == ModelState.READY and self._runtime is not None:
             return  # idempotent
+        # Claim the GPU before we start allocating VRAM. This evicts any
+        # other registered runtime (typically an image model). Acquire is
+        # idempotent if we already hold the lock.
+        GPULock.get().acquire(GPU_LOCK_NAME)
         self._error_msg = None
         self._state = ModelState.LOADING
 
@@ -386,6 +397,33 @@ class ModelManager:
             self._runtime = None
         self._state = ModelState.UNLOADED
         self._error_msg = None
+        GPULock.get().release(GPU_LOCK_NAME)
+
+    def unload_sync(self) -> None:
+        """Sync bridge so GPULock can evict the LLM from a non-async caller
+        (e.g. the image runtime's worker thread).
+
+        - If our event loop is captured (production), dispatch unload() to
+          it and wait. This serialises against an in-flight chat.
+        - If no loop captured (tests, pre-startup): drop the runtime
+          synchronously so VRAM is freed; lock release follows naturally.
+        """
+        if self._loop is None:
+            if self._runtime is not None:
+                try:
+                    self._runtime.unload()
+                except Exception:
+                    logger.exception("unload_sync: runtime.unload raised")
+                self._runtime = None
+            self._state = ModelState.UNLOADED
+            self._error_msg = None
+            GPULock.get().release(GPU_LOCK_NAME)
+            return
+        fut = asyncio.run_coroutine_threadsafe(self.unload(), self._loop)
+        try:
+            fut.result(timeout=30)
+        except Exception:
+            logger.exception("unload_sync: dispatched unload raised")
 
     def _effective_quant_label(self) -> str:
         if self._runtime is not None:

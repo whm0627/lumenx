@@ -30,6 +30,7 @@ from dotenv import load_dotenv, set_key
 # Local LLM runtime — package import sets HF_HOME to <project>/output/models/LLM/
 import src.llm_local  # noqa: F401  (side-effect import for HF_HOME)
 from src.llm_local.api import router as local_llm_router
+from src.img_local.api import router as local_image_router
 from src.llm_local.config import LocalLLMConfig
 from src.llm_local.llama_cpp_release import LlamaCppManager
 from src.llm_local.manager import ModelManager
@@ -69,6 +70,7 @@ _LLAMA_CPP_MGR = LlamaCppManager(
 )
 set_binary_manager(_LLAMA_CPP_MGR)
 app.include_router(local_llm_router)
+app.include_router(local_image_router)
 
 
 @app.on_event("startup")
@@ -201,6 +203,14 @@ async def check_system():
     """Check system dependencies (ffmpeg, etc.) and configuration."""
     from utils.system_check import run_system_checks
     return run_system_checks()
+
+
+@app.get("/system/gpu")
+async def get_gpu_stats():
+    """Live VRAM usage for the global status footer. Returns zeros if
+    nvidia-smi is unavailable so the UI gracefully shows 'no data'."""
+    from ...utils.gpu_stats import read_gpu_stats
+    return read_gpu_stats()
 
 
 
@@ -1038,7 +1048,10 @@ async def generate_assets(script_id: str, background_tasks: BackgroundTasks):
     # Given the mock nature, it's fast.
 
     try:
-        updated_script = pipeline.generate_assets(script_id)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None, partial(pipeline.generate_assets, script_id)
+        )
         return signed_response(updated_script)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1096,8 +1109,16 @@ async def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequ
     Analyzes script text and generates storyboard frames using AI (Prompt B).
     Replaces existing frames with newly generated ones.
     """
+    # MUST run via run_in_executor — pipeline.analyze_text_to_frames is sync
+    # and ends up calling ModelManager.chat_sync which dispatches the actual
+    # chat coroutine back onto this event loop. Calling it directly here
+    # blocks the loop, the coroutine never runs, and the call deadlocks
+    # (observed: LLM stays UNLOADED, request hangs forever).
     try:
-        updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None, partial(pipeline.analyze_text_to_frames, script_id, request.text)
+        )
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1139,8 +1160,17 @@ async def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest)
 @app.post("/projects/{script_id}/generate_storyboard", response_model=Script)
 async def generate_storyboard(script_id: str):
     """Triggers storyboard generation."""
+    # See analyze_to_storyboard for why run_in_executor is mandatory: any
+    # endpoint that ends up calling ModelManager.chat_sync (LLM) or the
+    # blocking image manager.generate from inside an async handler will
+    # deadlock against the same event loop the chat coroutine is dispatched
+    # to. Frame rendering walks every frame and calls image_model.generate
+    # for each one.
     try:
-        updated_script = pipeline.generate_storyboard(script_id)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None, partial(pipeline.generate_storyboard, script_id)
+        )
         return signed_response(updated_script)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1151,7 +1181,10 @@ async def generate_storyboard(script_id: str):
 async def generate_video(script_id: str):
     """Triggers video generation."""
     try:
-        updated_script = pipeline.generate_video(script_id)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None, partial(pipeline.generate_video, script_id)
+        )
         return signed_response(updated_script)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1162,7 +1195,10 @@ async def generate_video(script_id: str):
 async def generate_audio(script_id: str):
     """Triggers audio generation."""
     try:
-        updated_script = pipeline.generate_audio(script_id)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None, partial(pipeline.generate_audio, script_id)
+        )
         return signed_response(updated_script)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2089,6 +2125,7 @@ async def get_env_config():
             "DASHSCOPE_MODEL": os.getenv("DASHSCOPE_MODEL", ""),
             "LOCAL_LLM_HF_ID": os.getenv("LOCAL_LLM_HF_ID", ""),
             "LOCAL_LLM_GGUF_FILE": os.getenv("LOCAL_LLM_GGUF_FILE", ""),
+            "IMAGE_PROVIDER": os.getenv("IMAGE_PROVIDER", "wanx"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

@@ -47,18 +47,14 @@ export default function LLMModelSection() {
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
-        try {
-            const [e, c, s] = await Promise.all([
-                api.getEnvConfig(),
-                api.listCachedLLMs(),
-                api.getLocalLLMStatus(),
-            ]);
-            setEnv(e);
-            setCached(c);
-            setStatus(s);
-        } catch (e) {
-            console.error("LLM section refresh failed", e);
-        }
+        // Settle each independently — a slow or failing endpoint shouldn't
+        // blank the whole panel. Promise.all rejects on the first failure,
+        // which previously left `cached` empty whenever any one of the
+        // three calls hiccupped (e.g. /cached was slow scanning a large
+        // HF cache, status check timed out, etc.).
+        api.getEnvConfig().then(setEnv).catch(e => console.error("env config:", e));
+        api.listCachedLLMs().then(setCached).catch(e => console.error("cached:", e));
+        api.getLocalLLMStatus().then(setStatus).catch(e => console.error("status:", e));
     }, []);
 
     useEffect(() => {

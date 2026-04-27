@@ -41,6 +41,7 @@ export interface EnvConfigPayload {
     KLING_SECRET_KEY?: string;
     VIDU_API_KEY?: string;
     LLM_PROVIDER?: "dashscope" | "openai" | "local";
+    IMAGE_PROVIDER?: "wanx" | "local";
     DASHSCOPE_MODEL?: string;
     LOCAL_LLM_HF_ID?: string;
     LOCAL_LLM_GGUF_FILE?: string;
@@ -83,6 +84,43 @@ export interface CachedModelInfo {
     active_gguf_file?: string | null;
     download_status?: "downloading" | "paused" | "complete";
     expected_size_bytes?: number | null;
+}
+
+// Local image runtime (Qwen-Image via diffusers + torchao int8).
+export type LocalImageState =
+    | "UNLOADED"
+    | "DOWNLOADING"
+    | "LOADING"
+    | "GENERATING"
+    | "READY"
+    | "ERROR";
+
+export interface LocalImagePipeInfo {
+    role: "t2i" | "edit";
+    hf_id: string;
+    loaded: boolean;
+    state: LocalImageState;
+    progress: number;
+}
+
+export interface LocalImageStatus {
+    state: LocalImageState;
+    hf_id: string;
+    phase: string;
+    progress: number;  // 0..1
+    error: string | null;
+    // Caller-set human label for the in-flight call. AssetGenerator passes
+    // e.g. "full_body 1/2" so the workbench can route the spinner to the
+    // tile that's actually being generated, not all of them.
+    phase_label?: string;
+    // Per-pipe info so the footer can render T2I and Edit as separate rows
+    // instead of one row that flips between them.
+    pipes?: LocalImagePipeInfo[];
+}
+
+export interface GpuStats {
+    used_mb: number;
+    total_mb: number;
 }
 
 export interface VideoTask {
@@ -618,6 +656,30 @@ export const api = {
 
     cancelLocalLLM: async (): Promise<{ ok: boolean; cancelled: boolean; hf_id?: string; deleted?: string }> => {
         const res = await axios.post(`${API_URL}/llm/local/cancel`);
+        return res.data;
+    },
+
+    // Local image runtime ------------------------------------------------
+    getLocalImageStatus: async (): Promise<LocalImageStatus> => {
+        const res = await axios.get<LocalImageStatus>(`${API_URL}/img/local/status`);
+        return res.data;
+    },
+
+    loadLocalImage: async (): Promise<LocalImageStatus> => {
+        const res = await axios.post<LocalImageStatus>(
+            `${API_URL}/img/local/load`, {}, { timeout: 1_800_000 },  // 30 min for first download
+        );
+        return res.data;
+    },
+
+    cancelLocalImage: async (): Promise<{ ok: boolean; cancelled: boolean }> => {
+        const res = await axios.post(`${API_URL}/img/local/cancel`);
+        return res.data;
+    },
+
+    // System ------------------------------------------------------------
+    getGpuStats: async (): Promise<GpuStats> => {
+        const res = await axios.get<GpuStats>(`${API_URL}/system/gpu`);
         return res.data;
     },
 

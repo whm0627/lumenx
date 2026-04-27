@@ -346,6 +346,69 @@ async def test_cancel_clears_error_state(stub_load_result):
     assert mgr.status()["error"] is None
 
 
+class TestExclusiveGPULock:
+    """ModelManager must coordinate VRAM ownership via GPULock so loading
+    the LLM evicts whatever runtime (image, ...) currently holds the GPU,
+    and unloading releases the lock."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_lock(self):
+        from src.utils.gpu_lock import GPULock
+        GPULock.reset()
+        yield
+        GPULock.reset()
+
+    def test_init_registers_llm_with_gpu_lock(self, stub_load_result):
+        from src.utils.gpu_lock import GPULock
+        cfg = LocalLLMConfig(
+            hf_id="Qwen/Qwen3-8B-Instruct", quant=QuantMode.BF16, idle_seconds=3
+        )
+        factory = make_stub_runtime_factory(stub_load_result)
+        ModelManager(config=cfg, runtime_factory=factory)
+        assert "llm" in GPULock.get()._unload_fns
+
+    @pytest.mark.asyncio
+    async def test_load_acquires_lock_marking_llm_current(self, stub_load_result):
+        from src.utils.gpu_lock import GPULock
+        cfg = LocalLLMConfig(
+            hf_id="Qwen/Qwen3-8B-Instruct", quant=QuantMode.BF16, idle_seconds=3
+        )
+        factory = make_stub_runtime_factory(stub_load_result)
+        mgr = ModelManager(config=cfg, runtime_factory=factory)
+        await mgr.load()
+        assert GPULock.get().current() == "llm"
+
+    @pytest.mark.asyncio
+    async def test_unload_releases_lock(self, stub_load_result):
+        from src.utils.gpu_lock import GPULock
+        cfg = LocalLLMConfig(
+            hf_id="Qwen/Qwen3-8B-Instruct", quant=QuantMode.BF16, idle_seconds=3
+        )
+        factory = make_stub_runtime_factory(stub_load_result)
+        mgr = ModelManager(config=cfg, runtime_factory=factory)
+        await mgr.load()
+        await mgr.unload()
+        assert GPULock.get().current() is None
+
+    @pytest.mark.asyncio
+    async def test_load_evicts_prior_holder(self, stub_load_result):
+        """If image was holding the GPU, llm load must trigger image's unload."""
+        from src.utils.gpu_lock import GPULock
+        image_unload = MagicMock()
+        GPULock.get().register("image", image_unload)
+        GPULock.get().acquire("image")
+
+        cfg = LocalLLMConfig(
+            hf_id="Qwen/Qwen3-8B-Instruct", quant=QuantMode.BF16, idle_seconds=3
+        )
+        factory = make_stub_runtime_factory(stub_load_result)
+        mgr = ModelManager(config=cfg, runtime_factory=factory)
+        await mgr.load()
+
+        image_unload.assert_called_once()
+        assert GPULock.get().current() == "llm"
+
+
 @pytest.mark.asyncio
 async def test_cancel_idempotent_when_called_twice(stub_load_result):
     """A second cancel() while already UNLOADED returns False, no state change."""
