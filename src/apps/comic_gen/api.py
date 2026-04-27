@@ -27,6 +27,15 @@ from ...utils import setup_logging
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv, set_key
 
+# Local LLM runtime — package import sets HF_HOME to <project>/output/models/LLM/
+import src.llm_local  # noqa: F401  (side-effect import for HF_HOME)
+from src.llm_local.api import router as local_llm_router
+from src.llm_local.config import LocalLLMConfig
+from src.llm_local.llama_cpp_release import LlamaCppManager
+from src.llm_local.manager import ModelManager
+from src.llm_local.runtime_server import set_binary_manager
+from pathlib import Path as _Path
+
 app = FastAPI(title="AI Comic Gen API")
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,36 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],  # Allow browsers to access Content-Disposition for downloads
 )
+
+# Install singletons + mount /llm/local/* router.
+ModelManager.install(LocalLLMConfig.from_env())
+_LLAMA_CPP_MGR = LlamaCppManager(
+    runtime_parent=_Path(_project_root) / "output" / "runtime"
+)
+set_binary_manager(_LLAMA_CPP_MGR)
+app.include_router(local_llm_router)
+
+
+@app.on_event("startup")
+async def _local_llm_startup():
+    """Capture event loop for sync->async bridge, start idle watcher, and
+    fire-and-forget the llama.cpp release auto-update check.
+    """
+    mgr = ModelManager.get()
+    mgr.capture_loop()
+    await mgr.start_idle_watcher()
+
+    # Fire-and-forget background task: check GitHub for newer llama.cpp release.
+    # Doesn't block startup. If GitHub unreachable, falls back to local install.
+    import asyncio as _asyncio
+    _asyncio.create_task(_LLAMA_CPP_MGR.ensure_latest_available())
+
+
+@app.on_event("shutdown")
+async def _local_llm_shutdown():
+    mgr = ModelManager.get()
+    await mgr.stop_idle_watcher()
+    await mgr.unload()
 
 # Middleware to add cache headers to static files
 @app.middleware("http")
@@ -256,13 +295,25 @@ class CreateProjectRequest(BaseModel):
 @app.post("/projects", response_model=Script)
 async def create_project(request: CreateProjectRequest, skip_analysis: bool = False):
     """Creates a new project from a novel text."""
+    t0 = time.monotonic()
+    logger.info(
+        f"[create_project] title={request.title!r} text_chars={len(request.text)} "
+        f"skip_analysis={skip_analysis}"
+    )
     # Run in thread pool to avoid blocking event loop during LLM analysis (Python 3.8 compatible)
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,  # Use default executor
-        partial(pipeline.create_project, request.title, request.text, skip_analysis)
-    )
-    return signed_response(result)
+    try:
+        result = await loop.run_in_executor(
+            None,  # Use default executor
+            partial(pipeline.create_project, request.title, request.text, skip_analysis)
+        )
+        dt = time.monotonic() - t0
+        n_chars = len(result.characters) if hasattr(result, "characters") else "?"
+        logger.info(f"[create_project] done in {dt:.1f}s — {n_chars} characters extracted")
+        return signed_response(result)
+    except Exception:
+        logger.exception(f"[create_project] failed after {time.monotonic()-t0:.1f}s")
+        raise
 
 
 
@@ -273,6 +324,8 @@ class ReparseProjectRequest(BaseModel):
 @app.put("/projects/{script_id}/reparse", response_model=Script)
 async def reparse_project(script_id: str, request: ReparseProjectRequest):
     """Re-parses the text for an existing project, replacing all entities."""
+    t0 = time.monotonic()
+    logger.info(f"[reparse] script_id={script_id} text_chars={len(request.text)}")
     try:
         # Run the blocking LLM call in a thread pool to avoid blocking the event loop (Python 3.8 compatible)
         loop = asyncio.get_event_loop()
@@ -280,10 +333,14 @@ async def reparse_project(script_id: str, request: ReparseProjectRequest):
             None,  # Use default executor
             partial(pipeline.reparse_project, script_id, request.text)
         )
+        dt = time.monotonic() - t0
+        n_chars = len(result.characters) if hasattr(result, "characters") else "?"
+        logger.info(f"[reparse] done in {dt:.1f}s — {n_chars} characters extracted")
         return signed_response(result)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.exception(f"[reparse] failed after {time.monotonic()-t0:.1f}s")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -658,6 +715,10 @@ class EnvConfig(ProviderRoutingConfig):
     KLING_ACCESS_KEY: Optional[str] = None
     KLING_SECRET_KEY: Optional[str] = None
     VIDU_API_KEY: Optional[str] = None
+    LLM_PROVIDER: Optional[str] = None
+    DASHSCOPE_MODEL: Optional[str] = None
+    LOCAL_LLM_HF_ID: Optional[str] = None
+    LOCAL_LLM_GGUF_FILE: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -2024,6 +2085,10 @@ async def get_env_config():
             "KLING_PROVIDER_MODE": _normalize_provider_mode(os.getenv("KLING_PROVIDER_MODE")),
             "VIDU_PROVIDER_MODE": _normalize_provider_mode(os.getenv("VIDU_PROVIDER_MODE")),
             "PIXVERSE_PROVIDER_MODE": _normalize_provider_mode(os.getenv("PIXVERSE_PROVIDER_MODE")),
+            "LLM_PROVIDER": os.getenv("LLM_PROVIDER", "dashscope"),
+            "DASHSCOPE_MODEL": os.getenv("DASHSCOPE_MODEL", ""),
+            "LOCAL_LLM_HF_ID": os.getenv("LOCAL_LLM_HF_ID", ""),
+            "LOCAL_LLM_GGUF_FILE": os.getenv("LOCAL_LLM_GGUF_FILE", ""),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

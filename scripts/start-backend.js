@@ -10,7 +10,7 @@ const pythonPath = isWin
 const env = {
   ...process.env,
   NO_PROXY: '*.aliyuncs.com,localhost,127.0.0.1',
-  no_proxy: '*.aliyuncs.com,localhost,127.0.0.1'
+  no_proxy: '*.aliyuncs.com,localhost,127.0.0.1',
 };
 
 const backend = spawn(pythonPath, [

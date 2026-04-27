@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box } from 'lucide-react';
 import { useProjectStore, T2I_MODELS, I2I_MODELS, I2V_MODELS, ASPECT_RATIOS } from '@/store/projectStore';
 import { api } from '@/lib/api';
+import LLMModelSection from './LLMModelSection';
 
 interface ModelSettingsModalProps {
     isOpen: boolean;
@@ -292,6 +293,11 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                 </div>
                             </div>
                         </div>
+
+                        <div className="border-t border-white/10" />
+
+                        {/* LLM Section */}
+                        <LLMModelSection />
                     </div>
 
                     {/* Footer */}

@@ -1,16 +1,20 @@
 """
-LLM Adapter - Unified interface for DashScope and OpenAI-compatible APIs.
+LLM Adapter - Unified interface for DashScope, OpenAI-compatible APIs, and local HF models.
 
-Supports two providers:
+Supports three providers:
   - dashscope (default): Alibaba Cloud DashScope via OpenAI-compatible endpoint
   - openai: Any OpenAI-compatible API (OpenAI, DeepSeek, Ollama, etc.)
+  - local: In-process HuggingFace model managed by ModelManager (loads/unloads on demand)
 
 Configuration via environment variables:
-  LLM_PROVIDER=dashscope|openai
+  LLM_PROVIDER=dashscope|openai|local
   DASHSCOPE_API_KEY=...
   OPENAI_API_KEY=...
   OPENAI_BASE_URL=https://api.openai.com/v1
   OPENAI_MODEL=gpt-4o
+  LOCAL_LLM_HF_ID=Qwen/Qwen3-8B-Instruct
+  LOCAL_LLM_QUANT=auto|fp16|bf16|8bit|4bit
+  LOCAL_LLM_IDLE_SEC=3
 """
 import os
 import logging
@@ -31,6 +35,8 @@ class LLMAdapter:
 
     @property
     def is_configured(self) -> bool:
+        if self.provider == "local":
+            return bool(os.getenv("LOCAL_LLM_HF_ID"))
         if self.provider == "openai":
             return bool(os.getenv("OPENAI_API_KEY"))
         return bool(os.getenv("DASHSCOPE_API_KEY"))
@@ -61,7 +67,7 @@ class LLMAdapter:
     def _get_default_model(self) -> str:
         if self.provider == "openai":
             return os.getenv("OPENAI_MODEL", "gpt-4o")
-        return "qwen3.5-plus"
+        return os.getenv("DASHSCOPE_MODEL", "qwen3.5-plus")
 
     def chat(
         self,
@@ -72,17 +78,18 @@ class LLMAdapter:
         """
         Send a chat completion request and return the response content.
 
-        Args:
-            messages: List of {"role": ..., "content": ...} dicts
-            model: Model name override (uses provider default if None)
-            response_format: Optional {"type": "json_object"} constraint
-
-        Returns:
-            The assistant's response content as a string.
-
-        Raises:
-            RuntimeError: If the API call fails.
+        For provider='local' the call is dispatched to the in-process ModelManager,
+        which forwards to EmbeddedServerRuntime → llama-server. response_format
+        IS forwarded (llama-server natively supports it; in JSON mode the runtime
+        also disables Qwen3 thinking via chat_template_kwargs to save tokens).
         """
+        if self.provider == "local":
+            from src.llm_local.manager import ModelManager
+            return ModelManager.get().chat_sync(
+                messages,
+                response_format=response_format,
+            )
+
         client = self._get_client()
         model = model or self._get_default_model()
 

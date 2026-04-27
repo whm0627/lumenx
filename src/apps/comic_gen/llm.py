@@ -11,7 +11,11 @@ from .models import Script, Character, Scene, Prop, StoryboardFrame, GenerationS
 
 
 def _strip_markdown_json(content: str) -> str:
-    """Strip markdown code fences from LLM JSON output."""
+    """Strip markdown code fences from LLM JSON output.
+
+    Local provider relies on this — it has no native JSON mode and may wrap
+    responses in ```json fences depending on the model's training.
+    """
     if "```json" in content:
         content = content.split("```json")[1].split("```")[0]
     elif "```" in content:
@@ -140,18 +144,24 @@ class ScriptProcessor:
         """
         Parses the raw novel text into a structured Script object using an LLM.
         """
-        logger.info(f"Parsing novel: {title}...")
-        
+        import time as _time
+        logger.info(f"[parse_novel] title={title!r} input_chars={len(text)}")
+
         if not self.is_configured:
              logger.error("LLM API key not configured.")
              raise ValueError("LLM API Key 未配置。请在 API 配置中设置对应的 API Key 后重试。")
 
         prompt = self._construct_prompt(text)
+        logger.info(f"[parse_novel] prompt_chars={len(prompt)} → calling LLM (json mode)...")
 
         try:
+            t0 = _time.monotonic()
             content = self.llm.chat(
                 messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
             )
+            dt = _time.monotonic() - t0
+            logger.info(f"[parse_novel] LLM returned in {dt:.1f}s, response_chars={len(content)}")
             logger.debug(f"LLM Response Content:\n{content}")
 
             content = _strip_markdown_json(content)

@@ -5,6 +5,9 @@ import { Save, Loader2, Key, ChevronDown, ChevronRight, Settings, MessageSquareC
 import { api, type EnvConfigPayload, type ProviderMode } from "@/lib/api";
 import { T2I_MODELS, I2I_MODELS, I2V_MODELS, ASPECT_RATIOS } from "@/store/projectStore";
 import { Image, Video, Layout, Check, User, Building, Box } from "lucide-react";
+import LocalLLMPanel from "./LocalLLMPanel";
+
+type LLMProvider = "dashscope" | "openai" | "local";
 
 type EnvConfig = EnvConfigPayload & {
   DASHSCOPE_API_KEY: string;
@@ -131,6 +134,9 @@ export default function SettingsPage() {
     loadFromLS(LS_KEY_PROMPT, { storyboard_polish: "", video_polish: "", r2v_polish: "" })
   );
 
+  // ── LLM Provider selector ──
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>("dashscope");
+
   useEffect(() => {
     loadConfig();
   }, []);
@@ -141,6 +147,12 @@ export default function SettingsPage() {
     try {
       const data = await api.getEnvConfig();
       setConfig((prev) => normalizeEnvConfig(prev, data));
+      const provider = (data as any).LLM_PROVIDER;
+      if (provider === "openai" || provider === "local") {
+        setLlmProvider(provider);
+      } else {
+        setLlmProvider("dashscope");
+      }
     } catch {
       setLoadError("Failed to load configuration. Is the backend running?");
     } finally {
@@ -157,7 +169,7 @@ export default function SettingsPage() {
 
     setSaving(true);
     try {
-      await api.saveEnvConfig(config);
+      await api.saveEnvConfig({ ...config, LLM_PROVIDER: llmProvider } as EnvConfigPayload);
       alert("Configuration saved successfully!");
     } catch {
       alert("Failed to save configuration.");
@@ -259,6 +271,34 @@ export default function SettingsPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">OSS Base Path</label>
                   <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
                 </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-white/10">
+              <h3 className="text-sm font-bold text-white mb-4">LLM Provider (text generation)</h3>
+              <div className="bg-white/5 border border-white/10 rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setLlmProvider("dashscope")} className={modeButtonClass(llmProvider === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => setLlmProvider("openai")} className={modeButtonClass(llmProvider === "openai")}>
+                    OpenAI-Compatible
+                  </button>
+                  <button type="button" onClick={() => setLlmProvider("local")} className={modeButtonClass(llmProvider === "local")}>
+                    Local (HuggingFace)
+                  </button>
+                </div>
+                {llmProvider === "dashscope" && (
+                  <p className="text-xs text-gray-500">
+                    Uses DASHSCOPE_API_KEY (default). Configure your key in the API Keys section above.
+                  </p>
+                )}
+                {llmProvider === "openai" && (
+                  <p className="text-xs text-gray-500">
+                    Configure OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL in .env, then save and restart.
+                  </p>
+                )}
+                {llmProvider === "local" && <LocalLLMPanel />}
               </div>
             </div>
 

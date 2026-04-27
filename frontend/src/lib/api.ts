@@ -40,8 +40,49 @@ export interface EnvConfigPayload {
     KLING_ACCESS_KEY?: string;
     KLING_SECRET_KEY?: string;
     VIDU_API_KEY?: string;
+    LLM_PROVIDER?: "dashscope" | "openai" | "local";
+    DASHSCOPE_MODEL?: string;
+    LOCAL_LLM_HF_ID?: string;
+    LOCAL_LLM_GGUF_FILE?: string;
     endpoint_overrides?: Record<string, string>;
     [key: string]: string | Record<string, string> | undefined;
+}
+
+export type LocalLLMState =
+    | "UNLOADED"
+    | "DOWNLOADING"
+    | "LOADING"
+    | "READY"
+    | "ERROR";
+
+export type LocalLLMQuant = "auto" | "fp16" | "bf16" | "8bit" | "4bit";
+
+export interface LocalLLMStatus {
+    state: LocalLLMState;
+    hf_id: string;
+    quant_mode: string;
+    vram_used_mb: number;
+    vram_total_mb: number;
+    last_used_ts: number;
+    idle_seconds: number;
+    error: string | null;
+}
+
+export interface LocalLLMConfig {
+    hf_id: string;
+    quant: LocalLLMQuant;
+    idle_seconds: number;
+    gguf_file?: string | null;
+}
+
+export interface CachedModelInfo {
+    hf_id: string;
+    size_bytes: number;
+    snapshot_path: string;
+    gguf_files?: string[] | null;
+    active_gguf_file?: string | null;
+    download_status?: "downloading" | "paused" | "complete";
+    expected_size_bytes?: number | null;
 }
 
 export interface VideoTask {
@@ -551,6 +592,47 @@ export const api = {
         const res = await axios.post(`${API_URL}/config/env`, config, {
             timeout: 60000, // 60 seconds timeout
         });
+        return res.data;
+    },
+
+    // Local LLM ----------------------------------------------------------
+    getLocalLLMStatus: async (): Promise<LocalLLMStatus> => {
+        const res = await axios.get<LocalLLMStatus>(`${API_URL}/llm/local/status`);
+        return res.data;
+    },
+
+    configureLocalLLM: async (cfg: LocalLLMConfig): Promise<{ ok: boolean; persisted: boolean }> => {
+        const res = await axios.post(`${API_URL}/llm/local/configure`, cfg);
+        return res.data;
+    },
+
+    loadLocalLLM: async (): Promise<LocalLLMStatus> => {
+        const res = await axios.post<LocalLLMStatus>(`${API_URL}/llm/local/load`, {}, { timeout: 600_000 });
+        return res.data;
+    },
+
+    unloadLocalLLM: async (): Promise<LocalLLMStatus> => {
+        const res = await axios.post<LocalLLMStatus>(`${API_URL}/llm/local/unload`);
+        return res.data;
+    },
+
+    cancelLocalLLM: async (): Promise<{ ok: boolean; cancelled: boolean; hf_id?: string; deleted?: string }> => {
+        const res = await axios.post(`${API_URL}/llm/local/cancel`);
+        return res.data;
+    },
+
+    testLocalLLM: async (): Promise<{ ok: boolean; elapsed_sec: number; response: string }> => {
+        const res = await axios.post(`${API_URL}/llm/local/test`, {}, { timeout: 600_000 });
+        return res.data;
+    },
+
+    listCachedLLMs: async (): Promise<CachedModelInfo[]> => {
+        const res = await axios.get<CachedModelInfo[]>(`${API_URL}/llm/local/cached`);
+        return res.data;
+    },
+
+    deleteCachedLLM: async (hf_id: string): Promise<{ ok: boolean; deleted: string }> => {
+        const res = await axios.delete(`${API_URL}/llm/local/cached`, { params: { hf_id } });
         return res.data;
     },
 
