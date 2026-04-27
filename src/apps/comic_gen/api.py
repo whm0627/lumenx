@@ -1802,13 +1802,22 @@ async def render_frame(script_id: str, request: RenderFrameRequest):
     """Renders a specific frame using composition data (I2I)."""
     try:
         logger.info(f"Rendering frame {request.frame_id}")
-        
-        updated_script = pipeline.generate_storyboard_render(
-            script_id,
-            request.frame_id,
-            request.composition_data,
-            request.prompt,
-            request.batch_size
+        # Same deadlock fix as analyze_to_storyboard / generate_storyboard:
+        # the I2I render eventually drops into ImageModelManager.generate
+        # (sync) which blocks the worker; without run_in_executor we'd
+        # block the event loop and any chat/status callbacks dispatched
+        # back to it would deadlock.
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None,
+            partial(
+                pipeline.generate_storyboard_render,
+                script_id,
+                request.frame_id,
+                request.composition_data,
+                request.prompt,
+                request.batch_size,
+            ),
         )
         return signed_response(updated_script)
     except ValueError as e:

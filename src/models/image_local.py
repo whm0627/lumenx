@@ -155,7 +155,7 @@ class LocalQwenImageModel(ImageGenModel):
             logger.info(f"Detected GPU VRAM: {vram_gb:.1f} GB")
             if vram_gb >= 48:
                 return "full_gpu"
-            if vram_gb >= 24:
+            if vram_gb >= 32:
                 return "model_offload"
             return "sequential_offload"
         except Exception:

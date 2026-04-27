@@ -192,6 +192,10 @@ class StoryboardGenerator:
                 # Use I2I if reference images are available
                 # Pass collected asset paths to model
                 logger.info(f"[Storyboard] Calling model.generate with {len(asset_ref_paths)} reference images using model {model_name or 'default'}")
+                # Surface the frame id to the manager so the footer's
+                # phase_label tells the user *which* frame is rendering.
+                if hasattr(self.model, "set_generation_label"):
+                    self.model.set_generation_label(f"frame {frame.id[:8]}")
                 self.model.generate(prompt, output_path, ref_image_paths=asset_ref_paths, size=effective_size, model_name=model_name)
                 
                 # Store relative path for frontend serving
