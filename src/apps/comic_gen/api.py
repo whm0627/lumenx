@@ -32,6 +32,7 @@ import src.llm_local  # noqa: F401  (side-effect import for HF_HOME)
 from src.llm_local.api import router as local_llm_router
 from src.img_local.api import router as local_image_router
 from src.audio_local.api import router as local_audio_router
+from src.video_local.api import router as local_video_router
 from src.llm_local.config import LocalLLMConfig
 from src.llm_local.llama_cpp_release import LlamaCppManager
 from src.llm_local.manager import ModelManager
@@ -73,6 +74,7 @@ set_binary_manager(_LLAMA_CPP_MGR)
 app.include_router(local_llm_router)
 app.include_router(local_image_router)
 app.include_router(local_audio_router)
+app.include_router(local_video_router)
 
 
 @app.on_event("startup")
@@ -734,6 +736,9 @@ class EnvConfig(ProviderRoutingConfig):
     IMAGE_PROVIDER: Optional[str] = None
     TTS_PROVIDER: Optional[str] = None
     LOCAL_TTS_HF_ID: Optional[str] = None
+    VIDEO_PROVIDER: Optional[str] = None
+    LOCAL_VIDEO_QUANT: Optional[str] = None
+    USE_SAGE_ATTENTION: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -2142,6 +2147,9 @@ async def get_env_config():
             "IMAGE_PROVIDER": os.getenv("IMAGE_PROVIDER", "wanx"),
             "TTS_PROVIDER": os.getenv("TTS_PROVIDER", "dashscope"),
             "LOCAL_TTS_HF_ID": os.getenv("LOCAL_TTS_HF_ID", ""),
+            "VIDEO_PROVIDER": os.getenv("VIDEO_PROVIDER", "wanx"),
+            "LOCAL_VIDEO_QUANT": os.getenv("LOCAL_VIDEO_QUANT", "Q4_K_S"),
+            "USE_SAGE_ATTENTION": os.getenv("USE_SAGE_ATTENTION", "0"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:
