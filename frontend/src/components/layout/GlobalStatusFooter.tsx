@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Image as ImageIcon, Cpu, Loader2, AlertTriangle, Mic } from "lucide-react";
-import { api, type LocalLLMStatus, type LocalImageStatus, type LocalAudioStatus, type GpuStats, type EnvConfigPayload } from "@/lib/api";
+import { Brain, Image as ImageIcon, Cpu, Loader2, AlertTriangle, Mic, Film } from "lucide-react";
+import { api, type LocalLLMStatus, type LocalImageStatus, type LocalAudioStatus, type LocalVideoStatus, type GpuStats, type EnvConfigPayload } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -75,6 +75,7 @@ export default function GlobalStatusFooter() {
     const [llm, setLlm] = useState<LocalLLMStatus | null>(null);
     const [img, setImg] = useState<LocalImageStatus | null>(null);
     const [tts, setTts] = useState<LocalAudioStatus | null>(null);
+    const [video, setVideo] = useState<LocalVideoStatus | null>(null);
     const [gpu, setGpu] = useState<GpuStats | null>(null);
 
     // Read env once on mount to decide whether to render at all.
@@ -85,7 +86,8 @@ export default function GlobalStatusFooter() {
     const llmActive = env?.LLM_PROVIDER === "local";
     const imgActive = env?.IMAGE_PROVIDER === "local";
     const ttsActive = env?.TTS_PROVIDER === "local";
-    const anyLocal = llmActive || imgActive || ttsActive;
+    const videoActive = env?.VIDEO_PROVIDER === "local";
+    const anyLocal = llmActive || imgActive || ttsActive || videoActive;
 
     const refresh = useCallback(async () => {
         const promises: Promise<void>[] = [];
@@ -98,10 +100,13 @@ export default function GlobalStatusFooter() {
         if (ttsActive) {
             promises.push(api.getLocalAudioStatus().then(setTts).catch(() => { }));
         }
+        if (videoActive) {
+            promises.push(api.getLocalVideoStatus().then(setVideo).catch(() => { }));
+        }
         // GPU is cheap; poll regardless of which providers are local.
         promises.push(api.getGpuStats().then(setGpu).catch(() => { }));
         await Promise.all(promises);
-    }, [llmActive, imgActive, ttsActive]);
+    }, [llmActive, imgActive, ttsActive, videoActive]);
 
     useEffect(() => {
         if (!anyLocal) return;
@@ -182,6 +187,20 @@ export default function GlobalStatusFooter() {
                             : tts.phase_label || tts.phase || undefined
                     }
                     error={tts.error}
+                />
+            )}
+            {videoActive && video && (
+                <StatusRow
+                    icon={Film}
+                    label="VID"
+                    hfId={`${video.hf_id} (${video.quant})`}
+                    state={video.state}
+                    detail={
+                        video.progress > 0 && video.progress < 1
+                            ? `${Math.round(video.progress * 100)}%`
+                            : video.phase_label || video.phase || undefined
+                    }
+                    error={video.error}
                 />
             )}
             {gpu && gpu.total_mb > 0 && (

@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box, Mic } from 'lucide-react';
 import { useProjectStore, T2I_MODELS, I2I_MODELS, I2V_MODELS, ASPECT_RATIOS } from '@/store/projectStore';
-import { api, type EnvConfigPayload } from '@/lib/api';
+import { api, type EnvConfigPayload, type LocalVideoQuant } from '@/lib/api';
 import LLMModelSection from './LLMModelSection';
 
 interface ModelSettingsModalProps {
@@ -28,10 +28,16 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     // var (TTS_PROVIDER), same shape as IMAGE_PROVIDER. Read it from
     // /config/env on mount so the picker reflects current backend state.
     const [ttsProvider, setTtsProvider] = useState<EnvConfigPayload["TTS_PROVIDER"]>("dashscope");
+    const [videoProvider, setVideoProvider] = useState<EnvConfigPayload["VIDEO_PROVIDER"]>("wanx");
+    const [videoQuant, setVideoQuant] = useState<LocalVideoQuant>("Q4_K_S");
 
     useEffect(() => {
         api.getEnvConfig()
-            .then((env) => setTtsProvider(env.TTS_PROVIDER === "local" ? "local" : "dashscope"))
+            .then((env) => {
+                setTtsProvider(env.TTS_PROVIDER === "local" ? "local" : "dashscope");
+                setVideoProvider(env.VIDEO_PROVIDER === "local" ? "local" : "wanx");
+                setVideoQuant((env.LOCAL_VIDEO_QUANT || "Q4_K_S") as LocalVideoQuant);
+            })
             .catch(() => { });
     }, []);
 
@@ -420,6 +426,96 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                     切换到本地后，角色需要重新挑选本地音色（云端的龙xx 在本地不可用）。
                                 </p>
                             </div>
+                        </div>
+
+                        <div className="border-t border-white/10" />
+
+                        {/* Video (S2V lipsync) Section — provider toggle + quant tier picker.
+                            Mirrors the TTS section. Picking "Local" flips VIDEO_PROVIDER=local
+                            + lazy-triggers /video/local/load so the footer's VID row reflects
+                            the new state immediately. */}
+                        <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm font-bold text-white">
+                                <Film size={16} className="text-orange-400" />
+                                <span>Video (Speech-to-Video Lipsync)</span>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-gray-400">Provider</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        key="wanx-cloud"
+                                        onClick={() => {
+                                            setVideoProvider("wanx");
+                                            api.saveEnvConfig({ VIDEO_PROVIDER: "wanx" }).catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${videoProvider === "wanx"
+                                                ? 'border-blue-500/50 bg-blue-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {videoProvider === "wanx" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-blue-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">WanX (Cloud)</span>
+                                        <span className="text-xs text-gray-500">DashScope · 远端</span>
+                                    </button>
+                                    <button
+                                        key="local-wan-s2v"
+                                        onClick={() => {
+                                            setVideoProvider("local");
+                                            api.saveEnvConfig({
+                                                VIDEO_PROVIDER: "local",
+                                                LOCAL_VIDEO_QUANT: videoQuant,
+                                            }).catch(() => { });
+                                            api.loadLocalVideo(videoQuant).catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${videoProvider === "local"
+                                                ? 'border-purple-500/50 bg-purple-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {videoProvider === "local" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-purple-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">Wan2.2-S2V (Local)</span>
+                                        <span className="text-xs text-gray-500">14B · GGUF · 4090 24GB</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            {videoProvider === "local" && (
+                                <div className="space-y-2">
+                                    <label className="text-xs text-gray-400">Quantization</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {(["fp16", "Q8_0", "Q4_K_S"] as LocalVideoQuant[]).map((q) => (
+                                            <button
+                                                key={q}
+                                                onClick={() => {
+                                                    setVideoQuant(q);
+                                                    api.saveEnvConfig({ LOCAL_VIDEO_QUANT: q }).catch(() => { });
+                                                    api.loadLocalVideo(q).catch(() => { });
+                                                }}
+                                                className={`flex flex-col items-center p-3 rounded-lg border transition-all ${videoQuant === q
+                                                        ? 'border-purple-500/50 bg-purple-500/10'
+                                                        : 'border-white/10 hover:border-white/20 bg-white/5'
+                                                    }`}
+                                            >
+                                                <span className="text-sm font-medium text-white">{q}</span>
+                                                <span className="text-[10px] text-gray-500">
+                                                    {q === "fp16" ? "~28GB" : q === "Q8_0" ? "~20GB" : "~13GB ✓"}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className="text-[11px] text-gray-500">
+                                        Q4_K_S 是 4090 上推荐档位 — VRAM 余量足、速度也最快。
+                                    </p>
+                                </div>
+                            )}
                         </div>
 
                         <div className="border-t border-white/10" />
