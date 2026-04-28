@@ -42,19 +42,36 @@ def _inject_cosyvoice_paths() -> None:
             sys.path.insert(0, sp)
 
 
-# CosyVoice2-0.5B preset speakers — these are the only voice IDs that
-# work with inference_sft (the no-reference path). Voice cloning with
-# user-supplied reference audio is a future feature; for now local-mode
-# users pick from this list. Names mirror what the upstream model
-# returns from cosyvoice.list_available_spks() in our testing.
+# Each preset maps to a bundled reference WAV in the CosyVoice repo's
+# asset/ dir, used as the zero-shot/cross-lingual prompt to clone that
+# voice's timbre. Adding more presets = bundling more reference clips.
+#
+# We only ship the 2 references the official repo bundles for now:
+#  - zero_shot_prompt.wav → 中文女声 (with known transcript, runs via
+#    inference_zero_shot which gives the LLM a text↔token alignment example)
+#  - cross_lingual_prompt.wav → 英文男声 (no transcript known, runs via
+#    inference_cross_lingual which strips prompt_text from the LLM call)
+#
+# Notes on what we tried that DIDN'T work:
+#  - lucyknada/CosyVoice2-0.5B's spk2info.pt provides 7 voice presets but
+#    is v1 SFT data layout-converted to v2 — the LLM still produces
+#    coherent-sounding gibberish (no EOS, wrong token distribution) even
+#    after schema migration + dtype normalization + transformers downgrade.
+#    Our `_migrate_spk2info_v1_to_v2` is left in place as a safety net but
+#    inactive on this routing path.
+#  - Routing user voice IDs through `inference_cross_lingual(zero_shot_spk_id=...)`
+#    against migrated lucyknada spk2info: same gibberish.
+#
+# UX trade-off: 2 honest voices > 7 voices where 6 don't actually clone.
 COSYVOICE2_PRESETS = [
-    {"id": "中文女", "name": "中文女声", "gender": "Female", "lang": "zh"},
-    {"id": "中文男", "name": "中文男声", "gender": "Male",   "lang": "zh"},
-    {"id": "英文女", "name": "English Female", "gender": "Female", "lang": "en"},
-    {"id": "英文男", "name": "English Male",   "gender": "Male",   "lang": "en"},
-    {"id": "日语男", "name": "日本語男性",     "gender": "Male",   "lang": "ja"},
-    {"id": "韩语女", "name": "한국어 여성",    "gender": "Female", "lang": "ko"},
-    {"id": "粤语女", "name": "粤语女声",       "gender": "Female", "lang": "zh-yue"},
+    {"id": "中文女", "name": "中文女声", "gender": "Female", "lang": "zh",
+     "ref_wav": "asset/zero_shot_prompt.wav",
+     "ref_text": "希望你以后能够做的比我还好呦。",
+     "mode": "zero_shot"},
+    {"id": "英文男", "name": "English Male", "gender": "Male", "lang": "en",
+     "ref_wav": "asset/cross_lingual_prompt.wav",
+     "ref_text": "",  # transcript not bundled; cross_lingual mode skips it
+     "mode": "cross_lingual"},
 ]
 
 
@@ -261,17 +278,21 @@ class LocalCosyVoiceTTS:
                     casts += 1
         logger.info(f"[LocalCosyVoiceTTS] cast {casts} spk2info tensors to {llm_dtype}")
 
-    def _reference_for_voice(self, voice: str) -> Tuple[str, str]:
-        """Return (path, transcript) for the reference clip we use as the
-        zero-shot prompt for `voice`. Currently every preset maps to the
-        official asset/zero_shot_prompt.wav (a Chinese female sample
-        bundled with the repo) — multi-voice support is a future
-        iteration that bundles separate refs per ID."""
+    def _preset_for_voice(self, voice: str) -> Dict[str, Any]:
+        """Look up the preset dict for `voice`. Falls back to 中文女 if
+        the requested voice isn't in our preset list — protects against
+        a stale character.voice_id (e.g. someone migrated from cloud and
+        kept a `longxxx_v2` ID, or picked a preset we've since dropped)."""
+        for p in COSYVOICE2_PRESETS:
+            if p["id"] == voice:
+                return p
+        return COSYVOICE2_PRESETS[0]  # fallback: 中文女
+
+    def _resolve_ref_wav(self, ref_wav_rel: str) -> str:
+        """Resolve a preset's `ref_wav` relative path against the cloned
+        CosyVoice repo location."""
         repo = Path(os.environ.get("COSYVOICE_REPO_PATH", str(_default_repo_path())))
-        return (
-            str(repo / "asset" / "zero_shot_prompt.wav"),
-            "希望你以后能够做的比我还好呦。",
-        )
+        return str(repo / ref_wav_rel)
 
     def list_available_spks(self) -> List[str]:
         """Return preset speaker IDs the loaded model supports. Falls
@@ -312,22 +333,28 @@ class LocalCosyVoiceTTS:
         start = time.time()
         first_package_delay_ms = 0.0
         chunks = []
-        # CosyVoice2 has no SFT/preset mode — it's purely zero-shot. The
-        # lucyknada spk2info we tried earlier was actually v1 SFT speaker
-        # data smuggled into a v2 file, which produced babble because the
-        # LLM was never trained on that data shape. The only way to use
-        # v2 correctly is real zero-shot: provide a reference clip + its
-        # transcript. We bundle one (the official asset/zero_shot_prompt.wav,
-        # transcript "希望你以后能够做的比我还好呦。") and route every voice
-        # ID to it for now — multi-voice support means bundling more clips.
-        ref_wav, ref_text = self._reference_for_voice(voice)
-        gen = self._cosyvoice.inference_zero_shot(
-            text,
-            prompt_text=ref_text,
-            prompt_wav=ref_wav,
-            stream=False,
-            speed=speech_rate,
-        )
+        # Voice routing: every preset has a bundled reference WAV from
+        # the CosyVoice repo's asset/ dir. zero_shot mode is used when we
+        # know the reference's transcript (LLM gets a text↔token example
+        # for better fidelity); cross_lingual mode for refs without a
+        # bundled transcript.
+        preset = self._preset_for_voice(voice)
+        ref_wav = self._resolve_ref_wav(preset["ref_wav"])
+        if preset["mode"] == "zero_shot":
+            gen = self._cosyvoice.inference_zero_shot(
+                text,
+                prompt_text=preset["ref_text"],
+                prompt_wav=ref_wav,
+                stream=False,
+                speed=speech_rate,
+            )
+        else:  # cross_lingual
+            gen = self._cosyvoice.inference_cross_lingual(
+                text,
+                prompt_wav=ref_wav,
+                stream=False,
+                speed=speech_rate,
+            )
         idx = 0
         for item in gen:
             idx += 1

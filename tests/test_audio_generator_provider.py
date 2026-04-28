@@ -94,8 +94,10 @@ class TestVoiceListByProvider:
         gen = AudioGenerator({})
         voices = gen.get_available_voices()
         ids = {v["id"] for v in voices}
-        # CosyVoice2-0.5B's built-in speaker presets
+        # CosyVoice2-0.5B preset voices we currently ship — each backed
+        # by a bundled reference WAV. Adding more presets means bundling
+        # more reference clips.
         assert "中文女" in ids
-        assert "中文男" in ids
+        assert "英文男" in ids
         # Cloud voice IDs must NOT appear when local is active
         assert not any(vid.startswith("long") for vid in ids)

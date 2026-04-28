@@ -132,7 +132,7 @@ class TestVoiceList:
         voices = AudioModelManager.get().list_voices()
         ids = {v["id"] for v in voices}
         assert "中文女" in ids
-        assert "中文男" in ids
+        assert "英文男" in ids
 
     def test_list_voices_does_not_include_cloud_voices(self):
         voices = AudioModelManager.get().list_voices()
