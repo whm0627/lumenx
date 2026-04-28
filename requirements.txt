@@ -74,3 +74,11 @@ conformer>=0.3           # used in the flow encoder
 gdown>=6.0               # used by some CosyVoice utilities
 inflect>=7               # text normalization helper
 librosa>=0.11            # audio feature extraction
+
+# Local Video (Wan2.2-S2V-14B via GGUF).
+# The Wan2.2 inference repo lives under output/external/Wan2.2 (cloned).
+# Python deps:
+gguf>=0.6                # llama.cpp's official GGUF parser, pure-Python
+# sageattention          OPTIONAL — install separately from prebuilt wheel
+                         # matching torch 2.5.x + cu121 + py3.12 (mirrors the
+                         # flash_attn pattern; runtime-only, soft dependency)
