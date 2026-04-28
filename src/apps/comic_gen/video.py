@@ -9,8 +9,26 @@ logger = get_logger(__name__)
 class VideoGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
-        self.model = WanxModel(self.config.get('model', {}))
+        self.model = self._build_model(self.config.get('model', {}))
         self.output_dir = self.config.get('output_dir', 'output/video')
+
+    @staticmethod
+    def _build_model(model_config: Dict[str, Any]):
+        """Pick video-gen backend based on VIDEO_PROVIDER env var.
+
+        Mirrors AssetGenerator._build_model / AudioGenerator._build_tts:
+        a single env var flips between cloud Wanx and local Wan2.2-S2V.
+        Local routes through VideoModelManager (singleton) so all
+        callers share one loaded pipe."""
+        provider = os.getenv("VIDEO_PROVIDER", "wanx").lower()
+        if provider == "local":
+            from ...video_local.manager import VideoModelManager
+            return VideoModelManager.get(model_config)
+        if provider == "wanx":
+            return WanxModel(model_config)
+        raise ValueError(
+            f"Unknown VIDEO_PROVIDER={provider!r}; expected 'wanx' or 'local'"
+        )
 
     def generate_i2v(self, image_url: str, prompt: str, duration: int = 5, audio_url: str = None) -> Dict[str, Any]:
         """
