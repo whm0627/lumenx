@@ -43,6 +43,9 @@ export interface EnvConfigPayload {
     LLM_PROVIDER?: "dashscope" | "openai" | "local";
     IMAGE_PROVIDER?: "wanx" | "local";
     TTS_PROVIDER?: "dashscope" | "local";
+    VIDEO_PROVIDER?: "wanx" | "local";
+    LOCAL_VIDEO_QUANT?: LocalVideoQuant;
+    USE_SAGE_ATTENTION?: "0" | "1";
     DASHSCOPE_MODEL?: string;
     LOCAL_LLM_HF_ID?: string;
     LOCAL_LLM_GGUF_FILE?: string;
@@ -148,6 +151,27 @@ export interface LocalAudioVoice {
     name: string;
     gender: string;
     lang?: string;
+}
+
+// Local video runtime status (Wan2.2-S2V-14B with GGUF) — parallel to LocalAudioStatus.
+export type LocalVideoQuant = "fp16" | "Q8_0" | "Q4_K_S";
+
+export type LocalVideoState =
+    | "UNLOADED"
+    | "DOWNLOADING"
+    | "LOADING"
+    | "GENERATING"
+    | "READY"
+    | "ERROR";
+
+export interface LocalVideoStatus {
+    state: LocalVideoState;
+    quant: LocalVideoQuant;
+    hf_id: string;
+    phase: string;
+    progress: number;
+    error: string | null;
+    phase_label?: string;
 }
 
 export interface VideoTask {
@@ -727,6 +751,35 @@ export const api = {
             `${API_URL}/audio/local/voices`,
         );
         return res.data.voices;
+    },
+
+    // Local video (Wan2.2-S2V) runtime ----------------------------------
+    getLocalVideoStatus: async (): Promise<LocalVideoStatus> => {
+        const res = await axios.get<LocalVideoStatus>(`${API_URL}/video/local/status`);
+        return res.data;
+    },
+
+    loadLocalVideo: async (quant?: LocalVideoQuant): Promise<LocalVideoStatus> => {
+        const res = await axios.post<LocalVideoStatus>(
+            `${API_URL}/video/local/load`,
+            { quant },
+            { timeout: 1_800_000 },  // 30 min for first GGUF download
+        );
+        return res.data;
+    },
+
+    cancelLocalVideo: async (): Promise<{ ok: boolean; cancelled: boolean }> => {
+        const res = await axios.post(`${API_URL}/video/local/cancel`);
+        return res.data;
+    },
+
+    testLocalVideoSynthesize: async (prompt?: string): Promise<{ ok: boolean; path: string }> => {
+        const res = await axios.post(
+            `${API_URL}/video/local/test_synthesize`,
+            { prompt },
+            { timeout: 1_800_000 },  // 30 min generation
+        );
+        return res.data;
     },
 
     // System ------------------------------------------------------------
