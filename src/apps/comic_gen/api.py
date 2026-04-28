@@ -31,6 +31,7 @@ from dotenv import load_dotenv, set_key
 import src.llm_local  # noqa: F401  (side-effect import for HF_HOME)
 from src.llm_local.api import router as local_llm_router
 from src.img_local.api import router as local_image_router
+from src.audio_local.api import router as local_audio_router
 from src.llm_local.config import LocalLLMConfig
 from src.llm_local.llama_cpp_release import LlamaCppManager
 from src.llm_local.manager import ModelManager
@@ -71,6 +72,7 @@ _LLAMA_CPP_MGR = LlamaCppManager(
 set_binary_manager(_LLAMA_CPP_MGR)
 app.include_router(local_llm_router)
 app.include_router(local_image_router)
+app.include_router(local_audio_router)
 
 
 @app.on_event("startup")
@@ -729,6 +731,9 @@ class EnvConfig(ProviderRoutingConfig):
     DASHSCOPE_MODEL: Optional[str] = None
     LOCAL_LLM_HF_ID: Optional[str] = None
     LOCAL_LLM_GGUF_FILE: Optional[str] = None
+    IMAGE_PROVIDER: Optional[str] = None
+    TTS_PROVIDER: Optional[str] = None
+    LOCAL_TTS_HF_ID: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -2135,6 +2140,8 @@ async def get_env_config():
             "LOCAL_LLM_HF_ID": os.getenv("LOCAL_LLM_HF_ID", ""),
             "LOCAL_LLM_GGUF_FILE": os.getenv("LOCAL_LLM_GGUF_FILE", ""),
             "IMAGE_PROVIDER": os.getenv("IMAGE_PROVIDER", "wanx"),
+            "TTS_PROVIDER": os.getenv("TTS_PROVIDER", "dashscope"),
+            "LOCAL_TTS_HF_ID": os.getenv("LOCAL_TTS_HF_ID", ""),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

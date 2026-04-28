@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Image as ImageIcon, Cpu, Loader2, AlertTriangle } from "lucide-react";
-import { api, type LocalLLMStatus, type LocalImageStatus, type GpuStats, type EnvConfigPayload } from "@/lib/api";
+import { Brain, Image as ImageIcon, Cpu, Loader2, AlertTriangle, Mic } from "lucide-react";
+import { api, type LocalLLMStatus, type LocalImageStatus, type LocalAudioStatus, type GpuStats, type EnvConfigPayload } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -23,7 +23,9 @@ function stateColor(state: string): StateColor {
     switch (state) {
         case "READY": return "green";
         case "LOADING":
-        case "DOWNLOADING": return "amber";
+        case "DOWNLOADING":
+        case "SYNTHESIZING":
+        case "GENERATING": return "amber";
         case "ERROR": return "red";
         default: return "gray";
     }
@@ -47,7 +49,7 @@ interface RowProps {
 
 function StatusRow({ icon: Icon, label, hfId, state, detail, error }: RowProps) {
     const c = stateColor(state);
-    const isBusy = state === "LOADING" || state === "DOWNLOADING";
+    const isBusy = state === "LOADING" || state === "DOWNLOADING" || state === "SYNTHESIZING" || state === "GENERATING";
     return (
         <div className="flex items-center gap-2 text-xs">
             <Icon size={14} className="text-gray-400 flex-shrink-0" />
@@ -72,6 +74,7 @@ export default function GlobalStatusFooter() {
     const [env, setEnv] = useState<EnvConfigPayload | null>(null);
     const [llm, setLlm] = useState<LocalLLMStatus | null>(null);
     const [img, setImg] = useState<LocalImageStatus | null>(null);
+    const [tts, setTts] = useState<LocalAudioStatus | null>(null);
     const [gpu, setGpu] = useState<GpuStats | null>(null);
 
     // Read env once on mount to decide whether to render at all.
@@ -81,7 +84,8 @@ export default function GlobalStatusFooter() {
 
     const llmActive = env?.LLM_PROVIDER === "local";
     const imgActive = env?.IMAGE_PROVIDER === "local";
-    const anyLocal = llmActive || imgActive;
+    const ttsActive = env?.TTS_PROVIDER === "local";
+    const anyLocal = llmActive || imgActive || ttsActive;
 
     const refresh = useCallback(async () => {
         const promises: Promise<void>[] = [];
@@ -91,10 +95,13 @@ export default function GlobalStatusFooter() {
         if (imgActive) {
             promises.push(api.getLocalImageStatus().then(setImg).catch(() => { }));
         }
+        if (ttsActive) {
+            promises.push(api.getLocalAudioStatus().then(setTts).catch(() => { }));
+        }
         // GPU is cheap; poll regardless of which providers are local.
         promises.push(api.getGpuStats().then(setGpu).catch(() => { }));
         await Promise.all(promises);
-    }, [llmActive, imgActive]);
+    }, [llmActive, imgActive, ttsActive]);
 
     useEffect(() => {
         if (!anyLocal) return;
@@ -163,6 +170,20 @@ export default function GlobalStatusFooter() {
                         error={img.error}
                     />
                 ))}
+            {ttsActive && tts && (
+                <StatusRow
+                    icon={Mic}
+                    label="TTS"
+                    hfId={tts.hf_id}
+                    state={tts.state}
+                    detail={
+                        tts.progress > 0 && tts.progress < 1
+                            ? `${Math.round(tts.progress * 100)}%`
+                            : tts.phase_label || tts.phase || undefined
+                    }
+                    error={tts.error}
+                />
+            )}
             {gpu && gpu.total_mb > 0 && (
                 <div className="flex items-center gap-2 text-xs ml-auto">
                     <Cpu size={14} className="text-gray-400" />

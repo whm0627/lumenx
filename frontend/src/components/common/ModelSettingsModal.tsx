@@ -2,9 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box } from 'lucide-react';
+import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box, Mic } from 'lucide-react';
 import { useProjectStore, T2I_MODELS, I2I_MODELS, I2V_MODELS, ASPECT_RATIOS } from '@/store/projectStore';
-import { api } from '@/lib/api';
+import { api, type EnvConfigPayload } from '@/lib/api';
 import LLMModelSection from './LLMModelSection';
 
 interface ModelSettingsModalProps {
@@ -24,6 +24,16 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const [propAspectRatio, setPropAspectRatio] = useState(currentProject?.model_settings?.prop_aspect_ratio || '1:1');
     const [storyboardAspectRatio, setStoryboardAspectRatio] = useState(currentProject?.model_settings?.storyboard_aspect_ratio || '16:9');
     const [isSaving, setIsSaving] = useState(false);
+    // TTS provider isn't a per-project setting — it's a process-wide env
+    // var (TTS_PROVIDER), same shape as IMAGE_PROVIDER. Read it from
+    // /config/env on mount so the picker reflects current backend state.
+    const [ttsProvider, setTtsProvider] = useState<EnvConfigPayload["TTS_PROVIDER"]>("dashscope");
+
+    useEffect(() => {
+        api.getEnvConfig()
+            .then((env) => setTtsProvider(env.TTS_PROVIDER === "local" ? "local" : "dashscope"))
+            .catch(() => { });
+    }, []);
 
     // Sync state when project changes
     useEffect(() => {
@@ -349,6 +359,66 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                         </button>
                                     ))}
                                 </div>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-white/10" />
+
+                        {/* Voice (TTS) Section — same dispatch pattern as Storyboard:
+                            cloud card flips TTS_PROVIDER=dashscope; local card flips
+                            TTS_PROVIDER=local + lazy-loads CosyVoice2 weights so the
+                            footer's TTS row reflects the new state immediately. */}
+                        <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm font-bold text-white">
+                                <Mic size={16} className="text-pink-400" />
+                                <span>Voice (Text-to-Speech)</span>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-gray-400">Provider</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        key="dashscope-cosyvoice"
+                                        onClick={() => {
+                                            setTtsProvider("dashscope");
+                                            api.saveEnvConfig({ TTS_PROVIDER: "dashscope" }).catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${ttsProvider === "dashscope"
+                                                ? 'border-blue-500/50 bg-blue-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {ttsProvider === "dashscope" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-blue-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">CosyVoice (Cloud)</span>
+                                        <span className="text-xs text-gray-500">DashScope · 龙xx 系列音色</span>
+                                    </button>
+                                    <button
+                                        key="local-cosyvoice2"
+                                        onClick={() => {
+                                            setTtsProvider("local");
+                                            api.saveEnvConfig({ TTS_PROVIDER: "local" }).catch(() => { });
+                                            api.loadLocalAudio().catch(() => { });
+                                        }}
+                                        className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${ttsProvider === "local"
+                                                ? 'border-purple-500/50 bg-purple-500/10'
+                                                : 'border-white/10 hover:border-white/20 bg-white/5'
+                                            }`}
+                                    >
+                                        {ttsProvider === "local" && (
+                                            <div className="absolute top-2 right-2">
+                                                <Check size={14} className="text-purple-400" />
+                                            </div>
+                                        )}
+                                        <span className="text-sm font-medium text-white">CosyVoice2 (Local)</span>
+                                        <span className="text-xs text-gray-500">FunAudioLLM 0.5B · ~5GB · 离线</span>
+                                    </button>
+                                </div>
+                                <p className="text-[11px] text-gray-500">
+                                    切换到本地后，角色需要重新挑选本地音色（云端的龙xx 在本地不可用）。
+                                </p>
                             </div>
                         </div>
 

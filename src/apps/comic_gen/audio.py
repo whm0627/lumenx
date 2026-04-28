@@ -11,17 +11,61 @@ class AudioGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
         self.output_dir = self.config.get('output_dir', 'output/audio')
-        
-        # Initialize TTS Processor
+
+        # TTS provider is environment-driven so the user can flip between
+        # cloud DashScope CosyVoice and the local CosyVoice2-0.5B runtime
+        # without code changes (mirrors IMAGE_PROVIDER for image gen).
         try:
-            self.tts = TTSProcessor()
-            logger.info("TTS Processor initialized successfully")
+            self.tts = self._build_tts(self.config.get('tts', {}))
+            logger.info(f"TTS Processor initialized ({type(self.tts).__name__})")
+        except ValueError:
+            # Unknown TTS_PROVIDER — surface as a hard error rather than
+            # silently falling back, so misconfiguration is loud.
+            raise
         except Exception as e:
             logger.warning(f"Failed to initialize TTS Processor: {e}. Using mock mode.")
             self.tts = None
 
+    @staticmethod
+    def _build_tts(tts_config: Dict[str, Any]):
+        """Pick TTS backend based on TTS_PROVIDER env var.
+
+        Mirrors AssetGenerator._build_model / StoryboardGenerator._build_model:
+        a single env var flips every dialogue render between cloud and local.
+        Local provider routes through AudioModelManager (singleton) so all
+        AudioGenerator instances share one loaded CosyVoice2 model."""
+        provider = os.getenv("TTS_PROVIDER", "dashscope").lower()
+        if provider == "local":
+            from ...audio_local.manager import AudioModelManager
+            return AudioModelManager.get(tts_config)
+        if provider == "dashscope":
+            return TTSProcessor()
+        raise ValueError(
+            f"Unknown TTS_PROVIDER={provider!r}; expected 'dashscope' or 'local'"
+        )
+
     def get_available_voices(self) -> List[Dict[str, str]]:
-        """Returns a list of available voices."""
+        """Returns a list of available voices for the *active* TTS provider.
+
+        Cloud and local CosyVoice expose disjoint voice ID spaces (cloud
+        = Alibaba's longxxxx_v2 series, local = CosyVoice2-0.5B's 中文女/
+        中文男 presets) — characters bind voice_id at assignment time, and
+        a voice from the wrong provider just fails at synthesis. Surface
+        only voices that actually work right now."""
+        provider = os.getenv("TTS_PROVIDER", "dashscope").lower()
+        if provider == "local":
+            from ...audio_local.manager import AudioModelManager
+            voices = AudioModelManager.get().list_voices()
+            return [
+                {
+                    "id": v["id"],
+                    "name": f"{v.get('name', v['id'])} - CosyVoice2 (本地)",
+                    "gender": v.get("gender", "Unknown"),
+                    "model": "cosyvoice2-0.5b",
+                }
+                for v in voices
+            ]
+        # Cloud DashScope branch (default)
         if self.tts:
             voices_dict = TTSProcessor.list_voices()
             return [

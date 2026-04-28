@@ -42,9 +42,11 @@ export interface EnvConfigPayload {
     VIDU_API_KEY?: string;
     LLM_PROVIDER?: "dashscope" | "openai" | "local";
     IMAGE_PROVIDER?: "wanx" | "local";
+    TTS_PROVIDER?: "dashscope" | "local";
     DASHSCOPE_MODEL?: string;
     LOCAL_LLM_HF_ID?: string;
     LOCAL_LLM_GGUF_FILE?: string;
+    LOCAL_TTS_HF_ID?: string;
     endpoint_overrides?: Record<string, string>;
     [key: string]: string | Record<string, string> | undefined;
 }
@@ -121,6 +123,31 @@ export interface LocalImageStatus {
 export interface GpuStats {
     used_mb: number;
     total_mb: number;
+}
+
+// Local audio (TTS) runtime status — parallel to LocalImageStatus.
+export type LocalAudioState =
+    | "UNLOADED"
+    | "DOWNLOADING"
+    | "LOADING"
+    | "SYNTHESIZING"
+    | "READY"
+    | "ERROR";
+
+export interface LocalAudioStatus {
+    state: LocalAudioState;
+    hf_id: string;
+    phase: string;
+    progress: number;
+    error: string | null;
+    phase_label?: string;
+}
+
+export interface LocalAudioVoice {
+    id: string;
+    name: string;
+    gender: string;
+    lang?: string;
 }
 
 export interface VideoTask {
@@ -675,6 +702,31 @@ export const api = {
     cancelLocalImage: async (): Promise<{ ok: boolean; cancelled: boolean }> => {
         const res = await axios.post(`${API_URL}/img/local/cancel`);
         return res.data;
+    },
+
+    // Local audio (TTS) runtime -----------------------------------------
+    getLocalAudioStatus: async (): Promise<LocalAudioStatus> => {
+        const res = await axios.get<LocalAudioStatus>(`${API_URL}/audio/local/status`);
+        return res.data;
+    },
+
+    loadLocalAudio: async (): Promise<LocalAudioStatus> => {
+        const res = await axios.post<LocalAudioStatus>(
+            `${API_URL}/audio/local/load`, {}, { timeout: 1_200_000 },  // 20 min: weights are smaller than image
+        );
+        return res.data;
+    },
+
+    cancelLocalAudio: async (): Promise<{ ok: boolean; cancelled: boolean }> => {
+        const res = await axios.post(`${API_URL}/audio/local/cancel`);
+        return res.data;
+    },
+
+    listLocalAudioVoices: async (): Promise<LocalAudioVoice[]> => {
+        const res = await axios.get<{ voices: LocalAudioVoice[] }>(
+            `${API_URL}/audio/local/voices`,
+        );
+        return res.data.voices;
     },
 
     // System ------------------------------------------------------------
