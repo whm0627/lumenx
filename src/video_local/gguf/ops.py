@@ -53,11 +53,9 @@ class GGUFLinear(nn.Module):
         self.out_features, self.in_features = self._shape
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pass raw bytes to dequant; it handles device placement.
-        # NOTE: the dequant fns currently take a Python bytes/memoryview
-        # and do their own H2D copy. Keeping that interface for now
-        # so dequant tests stay simple. A follow-up could push the
-        # bytes onto the GPU once and let dequant work on a device tensor.
-        raw_bytes = bytes(self._quant_bytes.cpu().numpy())
-        weight = self._dequant(raw_bytes, shape=self._shape, out_device=x.device.type)
+        # Pass the GPU-resident uint8 buffer directly to dequant — no
+        # CPU↔GPU byte ping-pong. This is the hot path of every layer
+        # in every diffusion step, so keeping it on-device is critical.
+        weight = self._dequant(self._quant_bytes, shape=self._shape,
+                               out_device=x.device.type)
         return F.linear(x, weight, self.bias)

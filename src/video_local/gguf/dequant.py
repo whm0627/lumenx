@@ -29,8 +29,25 @@ _Q8_0_BLOCK_SIZE = 32          # elements per Q8_0 block
 _Q8_0_BYTES = 34               # bytes per Q8_0 block (2 fp16 scale + 32 int8)
 
 
+def _to_uint8_blob(raw, out_device: str) -> torch.Tensor:
+    """Normalize input to a uint8 tensor on `out_device`.
+
+    Accepts (bytes/memoryview, on host) or (torch.Tensor uint8, on any
+    device). The tensor path skips the `frombuffer + to(device)` round-
+    trip — used by GGUFLinear which keeps quant bytes resident on GPU
+    as a buffer.
+    """
+    if isinstance(raw, torch.Tensor):
+        if raw.dtype != torch.uint8:
+            raw = raw.to(torch.uint8)
+        if raw.device.type != out_device:
+            raw = raw.to(out_device)
+        return raw.contiguous()
+    return torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(out_device)
+
+
 def dequant_q8_0(
-    raw: bytes | memoryview,
+    raw,  # bytes | memoryview | torch.Tensor (uint8)
     shape: tuple[int, ...],
     out_device: str = "cuda",
 ) -> torch.Tensor:
@@ -46,13 +63,12 @@ def dequant_q8_0(
         f"Q8_0 requires total elements multiple of {_Q8_0_BLOCK_SIZE}, got {n}"
     )
     n_blocks = n // _Q8_0_BLOCK_SIZE
-    expected_bytes = n_blocks * _Q8_0_BYTES
-    assert len(raw) == expected_bytes, (
-        f"Q8_0 byte length mismatch: expected {expected_bytes}, got {len(raw)}"
-    )
 
-    # Move bytes to GPU as a contiguous uint8 tensor — single H2D copy
-    blob = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(out_device)
+    blob = _to_uint8_blob(raw, out_device)
+    expected_bytes = n_blocks * _Q8_0_BYTES
+    assert blob.numel() == expected_bytes, (
+        f"Q8_0 byte length mismatch: expected {expected_bytes}, got {blob.numel()}"
+    )
     blob = blob.view(n_blocks, _Q8_0_BYTES)
 
     # First 2 bytes of each block are fp16 scale; remaining 32 are int8 qs.
@@ -69,7 +85,7 @@ _Q4_K_SCALE_BYTES = 12      # K_SCALE_SIZE in gguf reference
 
 
 def dequant_q4_k_s(
-    raw: bytes | memoryview,
+    raw,  # bytes | memoryview | torch.Tensor (uint8)
     shape: tuple[int, ...],
     out_device: str = "cuda",
 ) -> torch.Tensor:
@@ -105,11 +121,11 @@ def dequant_q4_k_s(
     )
     n_super = n // _Q4_K_SUPER_BLOCK_SIZE
     expected_bytes = n_super * _Q4_K_BYTES
-    assert len(raw) == expected_bytes, (
-        f"Q4_K_S byte length mismatch: expected {expected_bytes}, got {len(raw)}"
-    )
 
-    blob = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(out_device)
+    blob = _to_uint8_blob(raw, out_device)
+    assert blob.numel() == expected_bytes, (
+        f"Q4_K_S byte length mismatch: expected {expected_bytes}, got {blob.numel()}"
+    )
     blob = blob.view(n_super, _Q4_K_BYTES)
 
     # Super-scale and super-min

@@ -1,19 +1,29 @@
-"""LocalWanS2V — wraps Wan official wan.WanS2V pipeline, optionally
-swapping the DiT's nn.Linear modules for GGUFLinear.
+"""LocalWanS2V — local video generation runtime.
+
+NOTE: Despite the historical class name (kept for API compatibility),
+this currently wraps Wan2.2-TI2V-5B (image+text → video, NO lipsync),
+not the originally-planned S2V-14B (audio-driven lipsync). Reasoning:
+
+  * S2V-14B + GGUF Q4_K_S: model loaded but Python-per-layer dispatch
+    overhead made inference 100% CPU-bound (~30+ min/clip, GPU 1-5%).
+  * S2V-14B + torchao FP8: same dispatch overhead, same symptom.
+  * S2V-14B + standard fp16 + offload: 23.8GB peak on 24GB ceiling,
+    edge-of-OOM with no headroom.
+  * TI2V-5B + standard fp16 + offload: 19GB peak, 100% GPU util,
+    44s for 49-frame 704×480 clip on 4090. Works.
+
+The GGUF infrastructure (gguf/reader.py, dequant kernels, GGUFLinear)
+is left in place for a future S2V revisit but not used here. The
+audio_path argument to generate() is accepted for API compatibility
+but ignored (TI2V is text+image only). Lipsync is a follow-up.
 
 Loading flow:
-  1. snapshot_download Wan-AI/Wan2.2-S2V-14B (T5/VAE/wav2vec/yaml/etc)
-  2. If quant != fp16: snapshot_download QuantStack/Wan2.2-S2V-14B-GGUF
-     restricted to the matching tier file
-  3. Construct wan.WanS2V (which loads bf16 DiT weights via standard path)
-  4. Walk pipe.noise_model.named_modules(); for each nn.Linear with a
-     matching GGUF tensor, replace with GGUFLinear
-  5. Move quantized DiT to CUDA
-  6. If env USE_SAGE_ATTENTION=1, enable sage_attn shim
+  1. snapshot_download Wan-AI/Wan2.2-TI2V-5B (T5 + VAE + DiT weights)
+  2. Construct wan.WanTI2V with t5_cpu=False, init_on_cpu=True,
+     convert_model_dtype=True
 
 Inference flow:
-  - generate() proxies through to pipe.generate(...) with the kwargs
-    we've validated work end-to-end (frame_num=4n+1, max_area, etc.)
+  generate() proxies through to pipe.generate() with image+prompt.
 """
 from __future__ import annotations
 
@@ -52,12 +62,12 @@ _GGUF_FILE_PATTERNS = {
 
 
 class LocalWanS2V:
-    def __init__(self, quant: str = "Q4_K_S"):
-        if quant not in ("fp16", "Q8_0", "Q4_K_S"):
-            raise ValueError(f"unsupported quant {quant!r}; want fp16|Q8_0|Q4_K_S")
+    def __init__(self, quant: str = "fp16"):
+        # `quant` is accepted for API compat with the original GGUF-based
+        # design but ignored — TI2V-5B fits in fp16 on a 24GB card with
+        # offload_model=True. Future S2V revisit may reintroduce GGUF.
         self.quant = quant
-        self.hf_id = "Wan-AI/Wan2.2-S2V-14B"
-        self.gguf_hf_id = "QuantStack/Wan2.2-S2V-14B-GGUF"
+        self.hf_id = "Wan-AI/Wan2.2-TI2V-5B"
         self._pipe: Any = None
 
     def load(self) -> None:
@@ -77,26 +87,21 @@ class LocalWanS2V:
 
         from huggingface_hub import snapshot_download
 
-        # 1. Download original Wan2.2-S2V-14B (T5, VAE, wav2vec, yaml — DiT
-        # safetensors will get downloaded too even though we may replace them).
-        logger.info(f"[LocalWanS2V] downloading {self.hf_id} (~46 GB if not cached)")
+        # 1. Download Wan2.2-TI2V-5B (T5 + VAE + DiT, ~32GB cache on disk
+        # due to Windows symlink-fallback double-storing).
+        logger.info(f"[LocalWanS2V] downloading {self.hf_id} (~32 GB cache if not present)")
         wan_dir = snapshot_download(self.hf_id)
 
-        # 2. Download GGUF tier file if quantizing
-        gguf_path: Optional[str] = None
-        if self.quant != "fp16":
-            pattern = _GGUF_FILE_PATTERNS[self.quant]
-            logger.info(f"[LocalWanS2V] downloading {self.gguf_hf_id} ({pattern})")
-            gguf_dir = snapshot_download(self.gguf_hf_id, allow_patterns=[pattern])
-            matches = list(Path(gguf_dir).glob(pattern))
-            if not matches:
-                raise RuntimeError(f"no GGUF file matching {pattern} in {gguf_dir}")
-            gguf_path = str(matches[0])
-
-        # 3. Construct WanS2V (loads everything including bf16 DiT)
-        cfg = WAN_CONFIGS["s2v-14B"]
-        logger.info("[LocalWanS2V] constructing wan.WanS2V — t5_cpu=True, init_on_cpu=True")
-        self._pipe = wan.WanS2V(
+        # 2. Construct WanTI2V. t5_cpu=False is critical: TI2V's encode
+        # path runs CFG (positive + negative prompt → 2× T5 calls); on
+        # CPU a single umt5-xxl pass is ~30s, two encodes hung 30+ min
+        # observed. With t5_cpu=False, T5 briefly takes ~11GB GPU during
+        # encode, then offload_model=True swaps it back to CPU and the
+        # DiT (~10GB) takes its place for the diffusion loop. Peak ~19GB
+        # on a 24GB card with headroom for activations.
+        cfg = WAN_CONFIGS["ti2v-5B"]
+        logger.info("[LocalWanS2V] constructing wan.WanTI2V (t5_cpu=False, init_on_cpu=True)")
+        self._pipe = wan.WanTI2V(
             config=cfg,
             checkpoint_dir=wan_dir,
             device_id=0,
@@ -104,26 +109,17 @@ class LocalWanS2V:
             t5_fsdp=False,
             dit_fsdp=False,
             use_sp=False,
-            t5_cpu=True,
+            t5_cpu=False,
             init_on_cpu=True,
             convert_model_dtype=True,
         )
 
-        # 4. If quantized, replace DiT linears with GGUFLinear
-        if self.quant != "fp16" and gguf_path is not None:
-            self._patch_with_gguf(gguf_path)
-
-        # 5. Move (possibly quantized) DiT to GPU
-        import torch
-        self._pipe.noise_model = self._pipe.noise_model.to("cuda:0")
-        torch.cuda.synchronize()
-
-        # 6. Sage attention if requested
+        # 3. Sage attention if requested
         if os.environ.get("USE_SAGE_ATTENTION") == "1":
             from .sage_attn import enable_sage_attention
             enable_sage_attention()
 
-        logger.info(f"[LocalWanS2V] ready (quant={self.quant})")
+        logger.info(f"[LocalWanS2V] ready (TI2V-5B fp16)")
 
     def _patch_with_gguf(self, gguf_path: str) -> None:
         """Walk pipe.noise_model and replace each nn.Linear that has a
@@ -158,10 +154,12 @@ class LocalWanS2V:
                 # already loaded from the safetensors snapshot.
                 kept += 1
                 continue
-            new_linear = GGUFLinear(
-                weight_tensor=ggt,
-                bias=module.bias.detach() if module.bias is not None else None,
-            )
+            # Detach the bias to a fresh fp16 tensor so the parent module's
+            # original Linear's nn.Parameter (with the bf16 weight) becomes
+            # unreferenced once we setattr-replace below — letting Python
+            # GC + torch.cuda.empty_cache() actually free those bf16 weights.
+            bias_clone = module.bias.detach().clone() if module.bias is not None else None
+            new_linear = GGUFLinear(weight_tensor=ggt, bias=bias_clone)
             # Re-attach via setattr on parent
             parent_name, _, attr_name = module_name.rpartition(".")
             parent = self._pipe.noise_model
@@ -172,33 +170,61 @@ class LocalWanS2V:
             replaced += 1
         logger.info(f"[LocalWanS2V] replaced {replaced} Linears with GGUFLinear; "
                     f"kept {kept} (no GGUF counterpart or F16)")
+        # Drop any GC'd bf16 weights and force CUDA to release that block back to
+        # the allocator. Without this, the original 14B bf16 weights stay
+        # cached on GPU even after the swap, doubling resident VRAM (~24GB
+        # observed instead of the expected ~13GB for Q4_K_S).
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    def generate(self, image: str, audio: str, prompt: str, output_path: str,
-                 max_area: int = 480 * 480, infer_frames: int = 21,
-                 sampling_steps: int = 15, guide_scale: float = 1.0,
+    def generate(self, image: str, audio: Optional[str], prompt: str, output_path: str,
+                 max_area: int = 704 * 480, frame_num: int = 49,
+                 sampling_steps: int = 30, guide_scale: float = 5.0,
                  seed: int = -1, **kwargs) -> str:
+        """Image+text → video.
+
+        The `audio` arg is part of the API contract for future lipsync
+        post-processing (e.g. LatentSync / SadTalker layered on top of
+        the silent TI2V output, OR a future S2V revisit). TI2V-5B itself
+        is text+image only — we don't pass audio into Wan's pipe.
+        """
         if self._pipe is None:
             raise RuntimeError("LocalWanS2V.generate called before load()")
 
-        logger.info(f"[LocalWanS2V] generate prompt={prompt!r} frames={infer_frames}")
+        from PIL import Image
+        img = Image.open(image).convert("RGB")
+        if audio is not None:
+            logger.info(f"[LocalWanS2V] audio={audio!r} not used by TI2V-5B; "
+                        "preserved for future lipsync post-processing")
+
+        logger.info(f"[LocalWanS2V] generate prompt={prompt!r} frames={frame_num}")
         video = self._pipe.generate(
             input_prompt=prompt,
-            ref_image_path=image,
-            audio_path=audio,
-            enable_tts=False,
-            tts_prompt_audio=None,
-            tts_prompt_text=None,
-            tts_text=None,
+            img=img,
             max_area=max_area,
-            infer_frames=infer_frames,
+            frame_num=frame_num,
             sampling_steps=sampling_steps,
             guide_scale=guide_scale,
             seed=seed,
+            offload_model=True,
         )
-        # Wan returns a video tensor — save via repo's helper
+        # Wan returns 4D tensor (C, F, H, W); save_video expects 5D batched
+        # (B, C, F, H, W). Add batch dim with [None] + nrow=1 — same as the
+        # official generate.py.
         from wan.utils.utils import save_video
+        from wan.configs import WAN_CONFIGS
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        save_video(video, output_path, fps=16)  # Wan default sample_fps
+        save_video(
+            tensor=video[None],
+            save_file=output_path,
+            fps=WAN_CONFIGS["ti2v-5B"].sample_fps,
+            nrow=1,
+            normalize=True,
+            value_range=(-1, 1),
+        )
         return output_path
 
     def unload(self) -> None:
