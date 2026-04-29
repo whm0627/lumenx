@@ -72,7 +72,7 @@ def test_gguflinear_q4ks_dispatches_correctly():
             q4_high=[((j + k) * 2) % 16 for k in range(128)],
         ))
     raw = b"".join(raws)
-    tensor = GGUFTensor(name="w", quant_type="Q4_K_S", shape=(out_f, in_f),
+    tensor = GGUFTensor(name="w", quant_type="Q4_K", shape=(out_f, in_f),
                        raw_bytes=memoryview(raw))
     bias = torch.randn(out_f, dtype=torch.float16)
 

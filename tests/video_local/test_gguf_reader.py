@@ -53,14 +53,22 @@ class TestParseGguf:
         assert t.raw_bytes is not None
 
     def test_supported_quant_types(self):
-        # v1 whitelist — anything else raises UnsupportedQuantError
-        assert SUPPORTED_QUANT_TYPES == {"F16", "Q8_0", "Q4_K_S"}
+        # v1 implements dequant kernels for these
+        assert SUPPORTED_QUANT_TYPES == {"F16", "Q8_0", "Q4_K"}
+
+    def test_parseable_includes_f32(self):
+        # Mixed-quant GGUFs commonly contain F32 bias/norm tensors;
+        # reader must accept them (consumer skips wrapping)
+        from src.video_local.gguf.reader import PARSEABLE_QUANT_TYPES
+        assert "F32" in PARSEABLE_QUANT_TYPES
+        assert "F16" in PARSEABLE_QUANT_TYPES
+        assert "Q4_K" in PARSEABLE_QUANT_TYPES
 
     def test_unsupported_quant_raises(self, tmp_path, monkeypatch):
         # Construct a GGUF claiming a quant we don't support, verify reader rejects it
         f = tmp_path / "bad.gguf"
         _write_minimal_gguf(f, {"w": np.ones((2, 2), dtype=np.float16)})
-        # Force the reader to see Q3_K_M as the type (which isn't whitelisted)
+        # Force the reader to see Q3_K_M as the type (which isn't parseable)
         from src.video_local.gguf import reader as r
         monkeypatch.setattr(r, "_gguf_type_to_name", lambda t: "Q3_K_M")
         with pytest.raises(UnsupportedQuantError, match="Q3_K_M"):

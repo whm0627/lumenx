@@ -150,8 +150,12 @@ class LocalWanS2V:
                 kept += 1
                 continue
             ggt = gguf_tensors[tensor_key]
-            if ggt.quant_type == "F16":
-                # GGUFLinear doesn't handle F16; leave the original linear
+            # GGML block types we wrap. Note Q4_K covers both Q4_K_S and
+            # Q4_K_M strategies — the file-name suffix is just a quant
+            # rounding policy, the block layout is the same.
+            if ggt.quant_type not in ("Q8_0", "Q4_K"):
+                # F16 / F32 / BF16 — leave as plain nn.Linear with weights
+                # already loaded from the safetensors snapshot.
                 kept += 1
                 continue
             new_linear = GGUFLinear(

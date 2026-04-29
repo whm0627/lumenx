@@ -14,9 +14,12 @@ from .dequant import dequant_q4_k_s, dequant_q8_0
 from .reader import GGUFTensor
 
 
+# Maps GGML block format names → dequant kernel. The Q4_K_S and Q4_K_M
+# file-naming strategies both produce GGUF tensors of type "Q4_K"
+# (gguf.GGMLQuantizationType.Q4_K), so a single key handles both.
 _DEQUANT_FNS = {
-    "Q8_0":   dequant_q8_0,
-    "Q4_K_S": dequant_q4_k_s,
+    "Q8_0": dequant_q8_0,
+    "Q4_K": dequant_q4_k_s,
 }
 
 

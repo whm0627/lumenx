@@ -15,13 +15,28 @@ from typing import Dict, Tuple
 logger = logging.getLogger(__name__)
 
 
-# v1 ships these three. Adding more = implementing the corresponding
-# dequant kernel in dequant.py and listing it here.
-SUPPORTED_QUANT_TYPES = {"F16", "Q8_0", "Q4_K_S"}
+# v1 ships dequant kernels for these. Other types in the file (F32 for
+# small bias/norm tensors, F16 for unmodified embeddings, etc.) are
+# parsed and surfaced — they just don't get GGUFLinear-wrapped at the
+# consumer level.
+SUPPORTED_QUANT_TYPES = {"F16", "Q8_0", "Q4_K"}
+
+# Types we'll parse without erroring. GGUFLinear only wraps tensors
+# whose quant is in SUPPORTED_QUANT_TYPES \ {"F16"} (F16 stays as
+# plain nn.Linear since wrapping doesn't save anything). Mixed-quant
+# GGUFs commonly include F32 for bias / scale parameters; we read those
+# but the consumer (_patch_with_gguf) leaves them alone — the original
+# safetensors-loaded fp16 weight is kept.
+# Q5_K and Q6_K appear in mixed-strategy GGUFs (e.g. QuantStack's Q4_K_S
+# file uses Q5_K for cross-attn layers). v1 doesn't have dequant kernels
+# for them — they're still parsed so the reader doesn't reject the file,
+# but consumer code skips wrapping (those layers keep their original
+# bf16 weights from the safetensors snapshot, no quantization savings).
+PARSEABLE_QUANT_TYPES = {"F32", "F16", "BF16", "Q8_0", "Q4_K", "Q5_K", "Q6_K"}
 
 
 class UnsupportedQuantError(ValueError):
-    """Raised when a GGUF file contains a quant_type not in SUPPORTED_QUANT_TYPES."""
+    """Raised when a GGUF file contains a quant_type not in PARSEABLE_QUANT_TYPES."""
 
 
 @dataclass
@@ -30,7 +45,7 @@ class GGUFTensor:
     do NOT modify, do NOT keep a reference longer than the parent file
     handle's lifetime."""
     name: str
-    quant_type: str            # "F16" | "Q8_0" | "Q4_K_S"
+    quant_type: str            # "F16" | "Q8_0" | "Q4_K"
     shape: Tuple[int, ...]
     raw_bytes: memoryview      # mmap'd bytes, in GGUF block layout
 
@@ -54,12 +69,13 @@ def parse_gguf(path: str) -> Dict[str, GGUFTensor]:
     out: Dict[str, GGUFTensor] = {}
     for tensor in reader.tensors:
         quant_name = _gguf_type_to_name(tensor.tensor_type)
-        if quant_name not in SUPPORTED_QUANT_TYPES:
+        if quant_name not in PARSEABLE_QUANT_TYPES:
             raise UnsupportedQuantError(
                 f"GGUF tensor {tensor.name!r} uses quant {quant_name!r} which "
-                f"is not in v1 whitelist {sorted(SUPPORTED_QUANT_TYPES)}. "
-                f"To add support: implement a dequant kernel in dequant.py "
-                f"and extend SUPPORTED_QUANT_TYPES."
+                f"is not in v1 parseable set {sorted(PARSEABLE_QUANT_TYPES)}. "
+                f"To add support: implement a dequant kernel in dequant.py, "
+                f"extend SUPPORTED_QUANT_TYPES (for replacement) and "
+                f"PARSEABLE_QUANT_TYPES (to read without erroring)."
             )
         # GGUF stores shape in column-major (innermost dim first) and as
         # numpy.uint64. Convert to row-major Python ints so callers can
