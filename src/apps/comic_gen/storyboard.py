@@ -52,7 +52,7 @@ class StoryboardGenerator:
             
         return script
 
-    def generate_frame(self, frame: StoryboardFrame, characters: List[Character], scene: Scene, ref_image_path: str = None, ref_image_paths: List[str] = None, prompt: str = None, batch_size: int = 1, size: str = None, model_name: str = None) -> StoryboardFrame:
+    def generate_frame(self, frame: StoryboardFrame, characters: List[Character], scene: Scene, ref_image_path: str = None, ref_image_paths: List[str] = None, prompt: str = None, batch_size: int = 1, size: str = None, model_name: str = None, force_image_refs: bool = False) -> StoryboardFrame:
         """Generates a storyboard frame image."""
         frame.status = GenerationStatus.PROCESSING
         
@@ -189,14 +189,25 @@ class StoryboardGenerator:
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
                 
-                # Use I2I if reference images are available
-                # Pass collected asset paths to model
-                logger.info(f"[Storyboard] Calling model.generate with {len(asset_ref_paths)} reference images using model {model_name or 'default'}")
+                # Local Qwen-Image-Edit-2509/Plus is currently too slow for
+                # routine storyboard frames on 24GB cards. Keep scene-frame
+                # generation on the fast T2I path by default; callers can
+                # opt into the reference-conditioned edit path explicitly via
+                # LOCAL_STORYBOARD_USE_IMAGE_REFS=1.
+                effective_ref_paths = asset_ref_paths
+                if (
+                    os.getenv("IMAGE_PROVIDER", "wanx").lower() == "local"
+                    and os.getenv("LOCAL_STORYBOARD_USE_IMAGE_REFS", "0").strip() != "1"
+                    and not force_image_refs
+                ):
+                    effective_ref_paths = []
+
+                logger.info(f"[Storyboard] Calling model.generate with {len(effective_ref_paths)} reference images using model {model_name or 'default'}")
                 # Surface the frame id to the manager so the footer's
                 # phase_label tells the user *which* frame is rendering.
                 if hasattr(self.model, "set_generation_label"):
                     self.model.set_generation_label(f"frame {frame.id[:8]}")
-                self.model.generate(prompt, output_path, ref_image_paths=asset_ref_paths, size=effective_size, model_name=model_name)
+                self.model.generate(prompt, output_path, ref_image_paths=effective_ref_paths, size=effective_size, model_name=model_name)
                 
                 # Store relative path for frontend serving
                 rel_path = os.path.relpath(output_path, "output")

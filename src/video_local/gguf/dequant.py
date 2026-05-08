@@ -154,6 +154,81 @@ def dequant_q4_k_s(
     return out.reshape(shape).to(torch.float16).contiguous()
 
 
+_Q5_K_BYTES = 176     # 2(d) + 2(dmin) + 12(scales) + 32(qh) + 128(qs)
+
+
+def dequant_q5_k(
+    raw,
+    shape: tuple[int, ...],
+    out_device: str = "cuda",
+) -> torch.Tensor:
+    """Dequantize Q5_K bytes to fp16 tensor of `shape` on `out_device`.
+
+    Q5_K extends Q4_K with one extra high bit per element. Each
+    super-block stores 256 elements as 8 sub-blocks of 32. The scale
+    and min encoding is identical to Q4_K (12 bytes per super-block),
+    but quants are 5 bits each: low 4 bits in 128 bytes of `qs`, high
+    1 bit in 32 bytes of `qh` (bit-packed across 8 sub-blocks).
+
+    Layout (176 bytes per super-block):
+      [0..2]    fp16 super_scale d
+      [2..4]    fp16 super_min   dmin
+      [4..16]   12 bytes packed 6-bit scales/mins  (same as Q4_K)
+      [16..48]  32 bytes qh — bit `j` of byte `i` is high bit of
+                element `i` in sub-block `j` (0 ≤ j < 8)
+      [48..176] 128 bytes qs — packed 4-bit low nibbles, two
+                sub-blocks per row (low/high nibble)
+
+    Mixed-strategy GGUFs (e.g. QuantStack's Q4_K_S file) use Q5_K for
+    attention V projections + FFN.2 weights, so we MUST handle this
+    quant type even when the file name says Q4_K_S.
+    """
+    n = 1
+    for d in shape:
+        n *= d
+    assert n % _Q4_K_SUPER_BLOCK_SIZE == 0, (
+        f"Q5_K requires total elements multiple of {_Q4_K_SUPER_BLOCK_SIZE}, got {n}"
+    )
+    n_super = n // _Q4_K_SUPER_BLOCK_SIZE
+    expected_bytes = n_super * _Q5_K_BYTES
+
+    blob = _to_uint8_blob(raw, out_device)
+    assert blob.numel() == expected_bytes, (
+        f"Q5_K byte length mismatch: expected {expected_bytes}, got {blob.numel()}"
+    )
+    blob = blob.view(n_super, _Q5_K_BYTES)
+
+    super_d = blob[:, 0:2].contiguous().view(torch.float16).squeeze(-1)
+    super_m = blob[:, 2:4].contiguous().view(torch.float16).squeeze(-1)
+    sc, mn = _q4k_unpack_scale_min(blob[:, 4:16])
+
+    super_d_f32 = super_d.to(torch.float32).unsqueeze(-1)
+    super_m_f32 = super_m.to(torch.float32).unsqueeze(-1)
+    scale = super_d_f32 * sc.to(torch.float32)              # (n_super, 8)
+    minv = super_m_f32 * mn.to(torch.float32)               # (n_super, 8)
+
+    # Low nibbles: 128 bytes → 8 sub-blocks of 32 elements (low/high
+    # nibble per byte), same unpacking as Q4_K.
+    qs = blob[:, 48:176].contiguous()
+    q_pack = qs.view(n_super, 4, 32).to(torch.int32)        # (n_super, 4, 32)
+    q_lo = q_pack & 0x0F
+    q_hi_n = (q_pack >> 4) & 0x0F
+    q_pairs = torch.stack([q_lo, q_hi_n], dim=2)            # (n_super, 4, 2, 32)
+    q4 = q_pairs.reshape(n_super, 8, 32)                    # (n_super, 8, 32)
+
+    # High bits: 32 bytes → 8 sub-blocks × 32 elements, 1 bit each.
+    # Bit `j` of byte `i` = high bit of element `i` in sub-block `j`.
+    qh = blob[:, 16:48].contiguous()
+    qh_bits = qh.view(n_super, 1, 1, 32).to(torch.int32) >> \
+        torch.arange(0, 8, dtype=torch.int32, device=qh.device).view(1, 1, 8, 1)
+    qh_bits = (qh_bits & 0x01).view(n_super, 8, 32)         # (n_super, 8, 32)
+
+    q5 = (q4 | (qh_bits << 4)).to(torch.float32)            # 0..31
+
+    out = q5 * scale.unsqueeze(-1) - minv.unsqueeze(-1)     # (n_super, 8, 32)
+    return out.reshape(shape).to(torch.float16).contiguous()
+
+
 def _q4k_unpack_scale_min(pack: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Unpack the 12-byte Q4_K scale/min block into two (n_super, 8) uint8
     tensors of 6-bit values, matching gguf.quants.Q4_K.get_scale_min.

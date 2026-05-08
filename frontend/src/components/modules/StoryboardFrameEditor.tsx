@@ -40,10 +40,18 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
             // The api.renderFrame expects compositionData.
             // If we don't pass it, pipeline uses existing.
 
+            const currentImageUrl = frame.rendered_image_url || frame.image_url;
+            const compositionData = currentImageUrl
+                ? {
+                    reference_image_url: currentImageUrl,
+                    force_image_refs: true,
+                }
+                : null;
+
             const updatedProject = await api.renderFrame(
                 currentProject.id,
                 frame.id,
-                null, // Use existing composition data
+                compositionData,
                 prompt,
                 batchSize
             );

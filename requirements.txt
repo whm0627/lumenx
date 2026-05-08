@@ -25,12 +25,7 @@ oss2>=2.18.0
 
 # Local LLM Runtime
 torch>=2.3.0
-# Pin to 4.51.3: this is the version CosyVoice2 was tested against.
-# Newer transformers (5.x) silently change Qwen2's attention/forward
-# behavior enough that CosyVoice2's LLM never emits EOS during speech-
-# token generation, so every synth runs to max_token_text_ratio cap and
-# produces babble. Diffusers + Qwen-Image are happy at 4.51.3.
-transformers==4.51.3
+transformers>=4.45.0
 accelerate>=0.34.0
 bitsandbytes>=0.43.0
 huggingface_hub>=0.25.0
@@ -52,33 +47,11 @@ Pillow>=10.0.0
 # torch 2.5.x + CUDA 12.1.
 torchvision>=0.20,<0.21
 
-# Local TTS (CosyVoice2-0.5B).
-# The `cosyvoice` package on PyPI is a broken stub — install path is:
-#   git clone --recurse-submodules https://github.com/FunAudioLLM/CosyVoice \
-#     output/external/CosyVoice
-# We add it to sys.path at runtime; cosyvoice is loaded lazily so the
-# app boots fine without it (TTS_PROVIDER=local users get a clear error
-# pointing at the clone command if the repo isn't there).
-# Plus its python deps that ARE on PyPI:
-torchaudio>=2.5,<2.6     # match torch 2.5.x; install via the same cu121 index URL
-wetext>=0.1              # Chinese text frontend (CosyVoice falls through to it
-                         # when ttsfrd isn't installed — ttsfrd is Linux-only)
-matplotlib>=3.10         # CosyVoice's hyperpyyaml config pulls matplotlib.pyplot
-                         # via pydoc.locate during model construction
-pyarrow>=24              # CosyVoice dataset processor (loaded by inference)
-pyworld>=0.3             # f0 extraction
-onnx>=1.21               # speech_tokenizer_v2 ONNX runtime
-x-transformers>=2         # CosyVoice flow's transformer building blocks
-hyperpyyaml>=1.2         # CosyVoice's yaml config loader
-conformer>=0.3           # used in the flow encoder
-gdown>=6.0               # used by some CosyVoice utilities
-inflect>=7               # text normalization helper
-librosa>=0.11            # audio feature extraction
-
-# Local Video (Wan2.2-S2V-14B via GGUF).
-# The Wan2.2 inference repo lives under output/external/Wan2.2 (cloned).
-# Python deps:
-gguf>=0.6                # llama.cpp's official GGUF parser, pure-Python
-# sageattention          OPTIONAL — install separately from prebuilt wheel
-                         # matching torch 2.5.x + cu121 + py3.12 (mirrors the
-                         # flash_attn pattern; runtime-only, soft dependency)
+# Local TTS (CosyVoice-300M-SFT). Install path is non-trivial — the
+# `cosyvoice` package is NOT on PyPI in a maintained form. Pick one:
+#   1. Clone github.com/FunAudioLLM/CosyVoice and add to PYTHONPATH
+#   2. `pip install cosyvoice` if a community wheel is available for your platform
+# We list runtime support deps that ARE on PyPI here; cosyvoice itself
+# is loaded lazily, so the app boots fine without it (TTS_PROVIDER=local
+# users will get a clear error pointing them at the install instructions).
+torchaudio>=2.5,<2.6   # match torch 2.5.x; install via the same cu121 index URL

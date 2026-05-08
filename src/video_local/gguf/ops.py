@@ -10,16 +10,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .dequant import dequant_q4_k_s, dequant_q8_0
+from .dequant import dequant_q4_k_s, dequant_q5_k, dequant_q8_0
 from .reader import GGUFTensor
 
 
 # Maps GGML block format names → dequant kernel. The Q4_K_S and Q4_K_M
 # file-naming strategies both produce GGUF tensors of type "Q4_K"
-# (gguf.GGMLQuantizationType.Q4_K), so a single key handles both.
+# (gguf.GGMLQuantizationType.Q4_K), so a single key handles both. Q5_K
+# is needed for "mixed-strategy" GGUFs — QuantStack's Q4_K_S file uses
+# Q5_K for attention V projections + FFN.2 weights.
 _DEQUANT_FNS = {
     "Q8_0": dequant_q8_0,
     "Q4_K": dequant_q4_k_s,
+    "Q5_K": dequant_q5_k,
 }
 
 

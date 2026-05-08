@@ -196,6 +196,13 @@ const WAN22_PARAMS: ModelParamSupport = {
     seed: true, negativePrompt: true,
 };
 
+// Wan2.2-S2V-14B running locally with GGUF quantization. This is the
+// audio-driven lipsync path, not the older TI2V image-only path.
+const WAN_LOCAL_S2V_PARAMS: ModelParamSupport = {
+    resolution: { options: ['480p', '720p'], default: '720p' },
+    seed: true, negativePrompt: true, audio: true,
+};
+
 const KLING_PARAMS: ModelParamSupport = {
     negativePrompt: true,
     mode: { options: ['std', 'pro'], default: 'std' },
@@ -226,6 +233,11 @@ export const I2V_MODELS: I2VModelConfig[] = [
       duration: { type: 'slider', min: 1, max: 16, step: 1, default: 5 }, params: VIDU_PARAMS },
     { id: 'viduq3-turbo', name: 'Vidu Q3 Turbo', description: 'Vidu fast generation',
       duration: { type: 'slider', min: 1, max: 16, step: 1, default: 5 }, params: VIDU_PARAMS },
+    // Picking this card flips VIDEO_PROVIDER=local and triggers
+    // /video/local/load. Backend routes generation through
+    // VideoModelManager -> Wan2.2-S2V-14B locally.
+    { id: 'wan2.2-s2v-14b-local', name: 'Wan 2.2 S2V 14B (Local)', description: '14B · GGUF Q4_K_S · lipsync · 离线',
+      duration: { type: 'buttons', options: [2, 3, 5], default: 2 }, params: WAN_LOCAL_S2V_PARAMS },
 ];
 
 export const ASPECT_RATIOS = [

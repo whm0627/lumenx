@@ -1152,12 +1152,17 @@ async def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest)
     Returns the refined prompts and optionally updates the frame.
     """
     try:
-        result = pipeline.refine_frame_prompt(
-            script_id,
-            request.frame_id,
-            request.raw_prompt,
-            request.assets,
-            request.feedback,
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                pipeline.refine_frame_prompt,
+                script_id,
+                request.frame_id,
+                request.raw_prompt,
+                request.assets,
+                request.feedback,
+            ),
         )
         return result
     except ValueError as e:
@@ -2072,8 +2077,16 @@ async def polish_video_prompt(request: PolishVideoPromptRequest):
     """Polishes a video generation prompt using LLM. Returns bilingual prompts."""
     try:
         custom_prompt = _get_custom_prompt(request.script_id, "video_polish")
-        processor = ScriptProcessor()
-        result = processor.polish_video_prompt(request.draft_prompt, request.feedback, custom_prompt)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                ScriptProcessor().polish_video_prompt,
+                request.draft_prompt,
+                request.feedback,
+                custom_prompt,
+            ),
+        )
         return {
             "prompt_cn": result.get("prompt_cn", ""),
             "prompt_en": result.get("prompt_en", "")
@@ -2100,9 +2113,18 @@ async def polish_r2v_prompt(request: PolishR2VPromptRequest):
     """Polishes a R2V (Reference-to-Video) prompt using LLM. Returns bilingual prompts."""
     try:
         custom_prompt = _get_custom_prompt(request.script_id, "r2v_polish")
-        processor = ScriptProcessor()
         slot_info = [{"description": s.description} for s in request.slots]
-        result = processor.polish_r2v_prompt(request.draft_prompt, slot_info, request.feedback, custom_prompt)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                ScriptProcessor().polish_r2v_prompt,
+                request.draft_prompt,
+                slot_info,
+                request.feedback,
+                custom_prompt,
+            ),
+        )
         return {
             "prompt_cn": result.get("prompt_cn", ""),
             "prompt_en": result.get("prompt_en", "")

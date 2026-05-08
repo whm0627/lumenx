@@ -13,7 +13,7 @@ class AudioGenerator:
         self.output_dir = self.config.get('output_dir', 'output/audio')
 
         # TTS provider is environment-driven so the user can flip between
-        # cloud DashScope CosyVoice and the local CosyVoice2-0.5B runtime
+        # cloud DashScope CosyVoice and the local CosyVoice-300M-SFT runtime
         # without code changes (mirrors IMAGE_PROVIDER for image gen).
         try:
             self.tts = self._build_tts(self.config.get('tts', {}))
@@ -33,7 +33,7 @@ class AudioGenerator:
         Mirrors AssetGenerator._build_model / StoryboardGenerator._build_model:
         a single env var flips every dialogue render between cloud and local.
         Local provider routes through AudioModelManager (singleton) so all
-        AudioGenerator instances share one loaded CosyVoice2 model."""
+        AudioGenerator instances share one loaded CosyVoice SFT model."""
         provider = os.getenv("TTS_PROVIDER", "dashscope").lower()
         if provider == "local":
             from ...audio_local.manager import AudioModelManager
@@ -48,8 +48,8 @@ class AudioGenerator:
         """Returns a list of available voices for the *active* TTS provider.
 
         Cloud and local CosyVoice expose disjoint voice ID spaces (cloud
-        = Alibaba's longxxxx_v2 series, local = CosyVoice2-0.5B's 中文女/
-        中文男 presets) — characters bind voice_id at assignment time, and
+        = Alibaba's longxxxx_v2 series, local = CosyVoice-300M-SFT's
+        built-in presets) — characters bind voice_id at assignment time, and
         a voice from the wrong provider just fails at synthesis. Surface
         only voices that actually work right now."""
         provider = os.getenv("TTS_PROVIDER", "dashscope").lower()
@@ -59,9 +59,9 @@ class AudioGenerator:
             return [
                 {
                     "id": v["id"],
-                    "name": f"{v.get('name', v['id'])} - CosyVoice2 (本地)",
+                    "name": f"{v.get('name', v['id'])} - CosyVoice 300M SFT (本地)",
                     "gender": v.get("gender", "Unknown"),
-                    "model": "cosyvoice2-0.5b",
+                    "model": "cosyvoice-300m-sft",
                 }
                 for v in voices
             ]
@@ -108,7 +108,9 @@ class AudioGenerator:
     def _real_generate_dialogue(self, frame: StoryboardFrame, character: Character, text: str, speed: float, pitch: float, volume: int) -> StoryboardFrame:
         """Generate dialogue using real TTS."""
         try:
-            output_path = os.path.join(self.output_dir, 'dialogue', f"{frame.id}.mp3")
+            provider = os.getenv("TTS_PROVIDER", "dashscope").lower()
+            ext = "wav" if provider == "local" else "mp3"
+            output_path = os.path.join(self.output_dir, 'dialogue', f"{frame.id}.{ext}")
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             # Use character's assigned voice

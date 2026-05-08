@@ -1,5 +1,5 @@
 """AudioGenerator must honour TTS_PROVIDER so dialogue synthesis can run
-through the local CosyVoice2 runtime, not always fall back to DashScope.
+through the local CosyVoice SFT runtime, not always fall back to DashScope.
 
 Mirrors test_storyboard_generator_provider / test_asset_generator_provider:
 selection is environment-driven, the local provider routes through a
@@ -8,6 +8,7 @@ CosyVoice weights), and unknown providers are a hard error not a silent
 fallback.
 """
 import pytest
+from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +72,7 @@ class TestProviderSelection:
 
 class TestVoiceListByProvider:
     """Cloud and local CosyVoice expose disjoint voice ID spaces (cloud =
-    Alibaba's longxiaochun_v2 etc., local = CosyVoice2-0.5B's 中文女 / 中文男
+    Alibaba's longxiaochun_v2 etc., local = CosyVoice-300M-SFT's 中文女 / 中文男
     presets). get_available_voices must reflect what the *active* provider
     actually accepts — otherwise the user picks a cloud voice for a local
     project and every dialogue render fails."""
@@ -94,10 +95,36 @@ class TestVoiceListByProvider:
         gen = AudioGenerator({})
         voices = gen.get_available_voices()
         ids = {v["id"] for v in voices}
-        # CosyVoice2-0.5B preset voices we currently ship — each backed
-        # by a bundled reference WAV. Adding more presets means bundling
-        # more reference clips.
+        # CosyVoice-300M-SFT's built-in speaker presets
         assert "中文女" in ids
-        assert "英文男" in ids
+        assert "中文男" in ids
         # Cloud voice IDs must NOT appear when local is active
         assert not any(vid.startswith("long") for vid in ids)
+
+
+class TestDialogueOutputFormat:
+    def test_local_provider_writes_wav_dialogue(self, monkeypatch):
+        from src.apps.comic_gen.audio import AudioGenerator
+        from src.apps.comic_gen.models import Character, StoryboardFrame, GenerationStatus
+
+        monkeypatch.setenv("TTS_PROVIDER", "local")
+        gen = AudioGenerator({"output_dir": "output/audio"})
+        frame = StoryboardFrame(
+            id="frame-1",
+            scene_id="scene-1",
+            dialogue="hello",
+        )
+        character = Character(
+            id="char-1",
+            name="Narrator",
+            description="test character",
+            voice_id="中文男",
+        )
+
+        with patch.object(gen.tts, "synthesize", return_value=("unused", 0.0, "rid")) as synth:
+            result = gen.generate_dialogue(frame, character)
+
+        output_path = synth.call_args.args[1]
+        assert output_path.endswith("frame-1.wav")
+        assert result.audio_url.replace("\\", "/").endswith("dialogue/frame-1.wav")
+        assert result.status == GenerationStatus.COMPLETED

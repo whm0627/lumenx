@@ -131,6 +131,18 @@ export default function ConsistencyVault() {
             // Start polling if we got a task_id
             if (taskId) {
                 const pollKey = `${assetId}::${generationType}`;
+                // Polling philosophy: a generation task is long-running and
+                // tolerates *any* duration of backend unavailability. The
+                // only ways out are:
+                //   (a) backend reports completed → refresh project, stop
+                //   (b) backend reports failed → log it, stop, leave the
+                //       generating UI state for the user to clear via Cancel
+                //   (c) the user clicks Cancel → external code clears the
+                //       interval via pollIntervalsRef
+                // We deliberately NEVER give up on transient errors and
+                // NEVER pop a modal alert — every previous "alert + kill
+                // task" flow was a false positive (slow model load, backend
+                // restart, in-memory task lookup miss after restart).
                 const pollInterval = setInterval(async () => {
                     try {
                         const status = await api.getTaskStatus(taskId);
@@ -139,43 +151,37 @@ export default function ConsistencyVault() {
                         if (status.status === "completed") {
                             clearInterval(pollInterval);
                             pollIntervalsRef.current.delete(pollKey);
-                            // Refresh project data
                             const updatedProject = await api.getProject(currentProject.id);
                             updateProject(currentProject.id, updatedProject);
-                            console.log("Asset generated successfully (async)");
-
                             if (removeGeneratingTask) {
                                 removeGeneratingTask(assetId, generationType);
                             }
                         } else if (status.status === "failed") {
                             clearInterval(pollInterval);
                             pollIntervalsRef.current.delete(pollKey);
-                            console.error("Asset generation failed:", status.error);
-                            alert(status.error || '生成失败，请稍后重试');
-
-                            // Also refresh project to show updated status
+                            console.error("[Polling] backend reported failure:", status.error);
+                            // Refresh project to surface updated asset state.
                             try {
                                 const updatedProject = await api.getProject(currentProject.id);
                                 updateProject(currentProject.id, updatedProject);
                             } catch (refreshError) {
-                                console.error("Failed to refresh project:", refreshError);
+                                console.error("[Polling] refresh after failure failed:", refreshError);
                             }
-
                             if (removeGeneratingTask) {
                                 removeGeneratingTask(assetId, generationType);
                             }
                         }
-                        // If status is "pending" or "processing", continue polling
+                        // pending / processing → keep polling silently
                     } catch (pollError: any) {
-                        console.error("Polling error:", pollError);
-                        clearInterval(pollInterval);
-                        pollIntervalsRef.current.delete(pollKey);
-                        alert(`轮询任务状态失败: ${pollError.message || '网络错误'}`);
-                        if (removeGeneratingTask) {
-                            removeGeneratingTask(assetId, generationType);
-                        }
+                        // Could be: backend restarting, model loading and
+                        // blocking the threadpool, transient network blip,
+                        // 404 because backend lost in-memory task state.
+                        // None of these warrant cancelling the user's task —
+                        // just log and retry on the next tick.
+                        console.warn("[Polling] transient error, will retry:",
+                            pollError?.message || pollError);
                     }
-                }, 2000); // Poll every 2 seconds
+                }, 2000);
                 // Register so Cancel can stop this poller from outside.
                 pollIntervalsRef.current.set(pollKey, pollInterval);
             } else {

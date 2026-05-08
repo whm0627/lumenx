@@ -1,4 +1,4 @@
-"""Local TTS runtime — CosyVoice2-0.5B (FunAudioLLM open weights) via
+"""Local TTS runtime — CosyVoice-300M-SFT (FunAudioLLM open weights) via
 the official cosyvoice inference package.
 
 Mirrors src/img_local in shape: a manager singleton with an explicit

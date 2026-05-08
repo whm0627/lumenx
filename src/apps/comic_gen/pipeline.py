@@ -1293,9 +1293,11 @@ class ComicGenPipeline:
             ref_image_url = None
             ref_image_urls = []
             
+            force_image_refs = False
             if composition_data:
                 ref_image_url = composition_data.get('reference_image_url')
                 ref_image_urls = composition_data.get('reference_image_urls', [])
+                force_image_refs = bool(composition_data.get('force_image_refs'))
             
             ref_image_paths = []
             
@@ -1354,7 +1356,8 @@ class ComicGenPipeline:
                 prompt=final_prompt,
                 batch_size=batch_size,
                 size=effective_size,
-                model_name=i2i_model
+                model_name=i2i_model,
+                force_image_refs=force_image_refs,
             )
             
             self._save_data()

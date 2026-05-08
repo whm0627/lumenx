@@ -12,7 +12,7 @@ Configuration via environment variables:
   OPENAI_API_KEY=...
   OPENAI_BASE_URL=https://api.openai.com/v1
   OPENAI_MODEL=gpt-4o
-  LOCAL_LLM_HF_ID=Qwen/Qwen3-8B-Instruct
+  LOCAL_LLM_HF_ID=anthfu/Qwen3.6-35B-A3B-APEX-GGUF
   LOCAL_LLM_QUANT=auto|fp16|bf16|8bit|4bit
   LOCAL_LLM_IDLE_SEC=3
 """
@@ -29,9 +29,14 @@ class LLMAdapter:
     """Unified LLM call interface supporting DashScope and OpenAI-compatible APIs."""
 
     def __init__(self):
-        self.provider = os.getenv("LLM_PROVIDER", "dashscope").lower()
+        self._client_provider: Optional[str] = None
         self._client = None
         logger.info(f"LLM Adapter initialized with provider: {self.provider}")
+
+    @property
+    def provider(self) -> str:
+        """Read provider dynamically so Settings changes affect existing processors."""
+        return os.getenv("LLM_PROVIDER", "dashscope").lower()
 
     @property
     def is_configured(self) -> bool:
@@ -43,6 +48,10 @@ class LLMAdapter:
 
     def _get_client(self):
         """Get or create the OpenAI-compatible client (lazy, cached)."""
+        provider = self.provider
+        if self._client is not None and self._client_provider != provider:
+            self._client = None
+
         if self._client is None:
             try:
                 from openai import OpenAI
@@ -51,7 +60,7 @@ class LLMAdapter:
                     "openai package not installed. Run: pip install openai>=1.0.0"
                 )
 
-            if self.provider == "openai":
+            if provider == "openai":
                 self._client = OpenAI(
                     api_key=os.getenv("OPENAI_API_KEY"),
                     base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -62,6 +71,7 @@ class LLMAdapter:
                     api_key=os.getenv("DASHSCOPE_API_KEY"),
                     base_url=f"{get_provider_base_url('DASHSCOPE')}/compatible-mode/v1",
                 )
+            self._client_provider = provider
         return self._client
 
     def _get_default_model(self) -> str:
@@ -85,6 +95,10 @@ class LLMAdapter:
         """
         if self.provider == "local":
             from src.llm_local.manager import ModelManager
+            logger.info(
+                "Dispatching LLM chat to local model: %s",
+                ModelManager.get().config.hf_id,
+            )
             return ModelManager.get().chat_sync(
                 messages,
                 response_format=response_format,

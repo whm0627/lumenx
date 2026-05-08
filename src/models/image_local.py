@@ -7,6 +7,7 @@ so AssetGenerator can swap providers transparently.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,8 +27,30 @@ DEFAULT_HF_ID = "Qwen/Qwen-Image"
 # built model with multi-image (1–3 ref) support and IP creation / view
 # rotation in its training mix.
 DEFAULT_EDIT_HF_ID = "Qwen/Qwen-Image-Edit-2509"
+DEFAULT_EDIT_GGUF_REPO = "QuantStack/Qwen-Image-Edit-2509-GGUF"
+DEFAULT_EDIT_GGUF_FILE = "Qwen-Image-Edit-2509-Q4_K_M.gguf"
 DEFAULT_SIZE = "1024*1024"
+DEFAULT_STEPS = 28
 GPU_LOCK_NAME = "image"
+
+
+def _disable_transformers_sklearn_probe() -> None:
+    """Avoid importing sklearn/pyarrow through transformers generation utils.
+
+    In this Windows environment, the optional sklearn -> pyarrow import chain
+    can segfault the process while importing QwenImage pipelines. Qwen-Image
+    does not need sklearn assisted-generation heuristics, so mark it
+    unavailable before diffusers imports the pipeline modules.
+    """
+    try:
+        import transformers.utils.import_utils as import_utils
+        import transformers.utils as utils
+
+        import_utils._sklearn_available = False
+        if hasattr(utils, "is_sklearn_available"):
+            utils.is_sklearn_available = lambda: False
+    except Exception:
+        logger.exception("Failed to disable transformers sklearn probe")
 
 
 class LocalQwenImageModel(ImageGenModel):
@@ -41,7 +64,9 @@ class LocalQwenImageModel(ImageGenModel):
         super().__init__(config)
         params = config.get("params", {}) if isinstance(config, dict) else {}
         self.hf_id: str = params.get("hf_id", DEFAULT_HF_ID)
-        self.edit_hf_id: str = params.get("edit_hf_id", DEFAULT_EDIT_HF_ID)
+        self.edit_hf_id: str = DEFAULT_EDIT_HF_ID
+        self.edit_gguf_repo: str = DEFAULT_EDIT_GGUF_REPO
+        self.edit_gguf_file: str = DEFAULT_EDIT_GGUF_FILE
         # T2I pipeline (QwenImagePipeline) — loaded on first refs-less generate.
         self._pipe = None
         # Edit pipeline (QwenImageEditPlusPipeline) over Qwen-Image-Edit-2509 —
@@ -58,7 +83,7 @@ class LocalQwenImageModel(ImageGenModel):
         """Quantize (where compatible) + install offload hooks + tweak VAE.
         Shared between the T2I and Edit pipes so both follow the same
         auto-tuned VRAM budget."""
-        if strategy != "sequential_offload":
+        if strategy != "sequential_offload" and not getattr(pipe, "_lumenx_gguf_transformer", False):
             try:
                 from torchao.quantization import int8_weight_only, quantize_
 
@@ -87,6 +112,7 @@ class LocalQwenImageModel(ImageGenModel):
     def _construct_pipe(self):
         """Build the T2I pipeline (Qwen-Image base via QwenImagePipeline)."""
         import torch
+        _disable_transformers_sklearn_probe()
         from diffusers import QwenImagePipeline
 
         strategy = self._pick_offload_strategy()
@@ -103,13 +129,30 @@ class LocalQwenImageModel(ImageGenModel):
         generation — character variants, three-view sheets, pose changes —
         where Img2Img would just denoise on top of the input."""
         import torch
-        from diffusers import QwenImageEditPlusPipeline
+        _disable_transformers_sklearn_probe()
+        from diffusers import GGUFQuantizationConfig, QwenImageEditPlusPipeline, QwenImageTransformer2DModel
+        from huggingface_hub import hf_hub_download
 
         strategy = self._pick_offload_strategy()
         logger.info(f"Loading {self.edit_hf_id} via diffusers (strategy={strategy})")
-        pipe = QwenImageEditPlusPipeline.from_pretrained(
-            self.edit_hf_id, torch_dtype=torch.bfloat16
+        gguf_path = hf_hub_download(
+            repo_id=self.edit_gguf_repo,
+            filename=self.edit_gguf_file,
         )
+        logger.info(f"Loading edit transformer from GGUF: {gguf_path}")
+        transformer = QwenImageTransformer2DModel.from_single_file(
+            gguf_path,
+            config=self.edit_hf_id,
+            subfolder="transformer",
+            quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
+            torch_dtype=torch.bfloat16,
+        )
+        pipe = QwenImageEditPlusPipeline.from_pretrained(
+            self.edit_hf_id,
+            transformer=transformer,
+            torch_dtype=torch.bfloat16,
+        )
+        setattr(pipe, "_lumenx_gguf_transformer", True)
         self._apply_vram_strategy(pipe, strategy)
         return pipe
 
@@ -117,9 +160,9 @@ class LocalQwenImageModel(ImageGenModel):
         """Lazy-load the Edit pipeline. Different model weights from the
         T2I pipe, so first call triggers a separate ~17GB download."""
         self.active_hf_id = self.edit_hf_id
+        GPULock.get().acquire(GPU_LOCK_NAME)
         if self._pipe_edit is not None:
             return self._pipe_edit
-        GPULock.get().acquire(GPU_LOCK_NAME)
         self._pipe_edit = self._construct_edit_pipe()
         return self._pipe_edit
 
@@ -155,7 +198,7 @@ class LocalQwenImageModel(ImageGenModel):
             logger.info(f"Detected GPU VRAM: {vram_gb:.1f} GB")
             if vram_gb >= 48:
                 return "full_gpu"
-            if vram_gb >= 32:
+            if vram_gb >= 24:
                 return "model_offload"
             return "sequential_offload"
         except Exception:
@@ -170,6 +213,7 @@ class LocalQwenImageModel(ImageGenModel):
 
     def _get_pipe(self):
         self.active_hf_id = self.hf_id
+        GPULock.get().acquire(GPU_LOCK_NAME)
         if self._pipe is None:
             self._pipe = self._load_pipe()
         return self._pipe
@@ -177,14 +221,15 @@ class LocalQwenImageModel(ImageGenModel):
     def unload(self) -> None:
         """Drop the pipelines, free CUDA cache, release the GPU lock.
         Idempotent: safe to call when nothing is loaded."""
-        if self._pipe is not None:
-            logger.info(f"Unloading {self.hf_id}")
+        if self._pipe is not None or self._pipe_edit is not None:
+            logger.info(f"Unloading image runtimes ({self.hf_id}, {self.edit_hf_id})")
             self._pipe = None
-            self._pipe_edit = None  # release Edit pipe alongside T2I pipe
+            self._pipe_edit = None
             try:
                 import torch
 
                 if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                     torch.cuda.empty_cache()
             except Exception:
                 pass
@@ -223,7 +268,7 @@ class LocalQwenImageModel(ImageGenModel):
         ref_image_paths: Optional[List[str]] = None,
         size: str = DEFAULT_SIZE,
         negative_prompt: Optional[str] = None,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = DEFAULT_STEPS,
         progress_callback: Optional[Any] = None,
         **kwargs: Any,
     ) -> Tuple[str, float]:

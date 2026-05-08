@@ -1,9 +1,8 @@
 """AudioModelManager — singleton state machine wrapping LocalCosyVoiceTTS.
 
-Parallel to ImageModelManager but for TTS. The runtime is small enough
-(~500MB weights, ~2GB VRAM at runtime) that we don't bother with the
-GPULock single-model-at-a-time eviction the image manager uses — local
-TTS happily coexists with the loaded LLM and Image models on a 24GB card.
+Parallel to ImageModelManager but for TTS. It also participates in the
+process-wide GPULock so every local runtime releases VRAM before another
+one loads.
 
 State surface mirrors the image manager so the global status footer can
 treat both identically:
@@ -21,9 +20,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .cosyvoice_runtime import COSYVOICE2_PRESETS, LocalCosyVoiceTTS
+from .cosyvoice_runtime import COSYVOICE_SFT_PRESETS, LocalCosyVoiceTTS
+from ..utils.gpu_lock import GPULock
 
 logger = logging.getLogger(__name__)
+
+GPU_LOCK_NAME = "audio"
 
 
 # Same threshold semantics as img_local: bytes-on-disk >= this fraction
@@ -70,6 +72,7 @@ class AudioModelManager:
         self._cached_expected_bytes: int = 0
         self._gen_progress: float = 0.0
         self._phase_label: str = ""
+        GPULock.get().register(GPU_LOCK_NAME, self.unload_sync)
 
     # ---- progress / cache helpers ---------------------------------------
 
@@ -148,7 +151,7 @@ class AudioModelManager:
         list_available_spks() can refine this once weights are loaded,
         but for the picker UI the static list is what we want (matches
         the same names the model accepts at inference time)."""
-        return list(COSYVOICE2_PRESETS)
+        return list(COSYVOICE_SFT_PRESETS)
 
     def set_generation_label(self, label: str) -> None:
         self._phase_label = label
@@ -161,6 +164,7 @@ class AudioModelManager:
         self._state = AudioState.LOADING
         self._error = None
         try:
+            GPULock.get().acquire(GPU_LOCK_NAME)
             await asyncio.to_thread(self._inner.load)
             self._loaded = True
             self._state = AudioState.READY
@@ -179,6 +183,20 @@ class AudioModelManager:
         self._cached_expected_bytes = 0
         self._gen_progress = 0.0
         self._phase_label = ""
+        GPULock.get().release(GPU_LOCK_NAME)
+
+    def unload_sync(self) -> None:
+        """Synchronous GPULock eviction hook."""
+        try:
+            self._inner.unload()
+        finally:
+            self._state = AudioState.UNLOADED
+            self._error = None
+            self._loaded = False
+            self._cached_expected_bytes = 0
+            self._gen_progress = 0.0
+            self._phase_label = ""
+            GPULock.get().release(GPU_LOCK_NAME)
 
     # ---- TTSProcessor-compatible sync entry ------------------------------
 
@@ -200,6 +218,7 @@ class AudioModelManager:
             self._state = AudioState.LOADING
             self._error = None
             try:
+                GPULock.get().acquire(GPU_LOCK_NAME)
                 self._inner.load()
                 self._loaded = True
             except Exception as e:
@@ -208,6 +227,7 @@ class AudioModelManager:
                 logger.exception("AudioModelManager.synthesize: load failed")
                 raise
 
+        GPULock.get().acquire(GPU_LOCK_NAME)
         self._state = AudioState.SYNTHESIZING
         self._gen_progress = 0.0
 
@@ -240,4 +260,4 @@ class AudioModelManager:
     def list_voices_static() -> Dict[str, Dict[str, str]]:
         """Mirror of TTSProcessor.list_voices() shape — keyed by id, with
         metadata. Some callers use the static form."""
-        return {v["id"]: v for v in COSYVOICE2_PRESETS}
+        return {v["id"]: v for v in COSYVOICE_SFT_PRESETS}

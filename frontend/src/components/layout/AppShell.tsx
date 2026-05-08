@@ -8,13 +8,14 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
+// pb-14 on the shell itself leaves a 56px gutter at the bottom of both
+// columns so the full-width fixed status footer never covers the sidebar's
+// v0.1.0 row or the main content's last line.
 export default function AppShell({ activeTab, onTabChange, children }: AppShellProps) {
   return (
-    <div className="flex h-full w-full">
+    <div className="flex h-full w-full pb-14">
       <GlobalSidebar activeTab={activeTab} onTabChange={onTabChange} />
-      {/* pb-14 leaves a 56px gutter at the bottom of the scrollable area
-          so the (fixed-mounted) status footer never covers the last line. */}
-      <div className="flex-1 overflow-y-auto pb-14">{children}</div>
+      <div className="flex-1 overflow-y-auto">{children}</div>
     </div>
   );
 }

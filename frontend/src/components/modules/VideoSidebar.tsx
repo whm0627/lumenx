@@ -170,7 +170,21 @@ export default function VideoSidebar({ tasks, onRemix, params, setParams }: Vide
                                             return (
                                                 <button
                                                     key={model.id}
-                                                    onClick={() => !isDisabled && updateParam("model", model.id)}
+                                                    onClick={() => {
+                                                        if (isDisabled) return;
+                                                        updateParam("model", model.id);
+                                                        // Flip VIDEO_PROVIDER + (re)trigger local load when
+                                                        // user picks the local card; flip back to cloud
+                                                        // for any other selection. Mirrors how the image
+                                                        // local card flips IMAGE_PROVIDER in ModelSettingsModal.
+                                                        const isLocal = model.id === "wan2.2-s2v-14b-local" || model.id === "wan2.2-ti2v-local";
+                                                        api.saveEnvConfig({
+                                                            VIDEO_PROVIDER: isLocal ? "local" : "wanx",
+                                                        }).catch(() => { });
+                                                        if (isLocal) {
+                                                            api.loadLocalVideo().catch(() => { });
+                                                        }
+                                                    }}
                                                     disabled={isDisabled}
                                                     className={`w-full flex items-center justify-between p-2.5 rounded-lg border transition-all text-left ${isSelected
                                                         ? 'border-primary/50 bg-primary/10'

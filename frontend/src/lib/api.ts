@@ -11,7 +11,7 @@ const getApiUrl = (): string => {
         // In development mode (port 3000/3001 = Next.js dev server)
         // Backend is on a different port
         if (port === '3000' || port === '3001') {
-            return `${protocol}//${hostname}:17177`;
+            return `${protocol}//127.0.0.1:17177`;
         }
 
         // In production/packaged mode: Frontend is served by backend

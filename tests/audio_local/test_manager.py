@@ -1,4 +1,4 @@
-"""AudioModelManager — singleton state machine for the local CosyVoice2
+"""AudioModelManager — singleton state machine for the local CosyVoice SFT
 runtime.
 
 Mirrors ImageModelManager but for TTS. The runtime is much smaller than
@@ -125,14 +125,14 @@ class TestSynthesize:
 
 
 class TestVoiceList:
-    """Local provider exposes only CosyVoice2-0.5B's built-in speaker
+    """Local provider exposes only CosyVoice-300M-SFT's built-in speaker
     presets — no overlap with cloud DashScope voice IDs."""
 
     def test_list_voices_returns_cosyvoice_presets(self):
         voices = AudioModelManager.get().list_voices()
         ids = {v["id"] for v in voices}
         assert "中文女" in ids
-        assert "英文男" in ids
+        assert "中文男" in ids
 
     def test_list_voices_does_not_include_cloud_voices(self):
         voices = AudioModelManager.get().list_voices()

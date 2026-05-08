@@ -15,7 +15,10 @@ export default function VideoGenerator() {
     const [remixData, setRemixData] = useState<Partial<VideoTask> | null>(null);
 
     // Get default model from project settings
-    const defaultI2vModel = currentProject?.model_settings?.i2v_model || "wan2.5-i2v-preview";
+    const normalizeVideoModel = (model?: string) =>
+        model === "wan2.2-ti2v-local" ? "wan2.2-s2v-14b-local" : (model || "wan2.5-i2v-preview");
+
+    const defaultI2vModel = normalizeVideoModel(currentProject?.model_settings?.i2v_model);
 
     // Generation Params (Lifted State)
     const [params, setParams] = useState({
@@ -45,7 +48,7 @@ export default function VideoGenerator() {
     // Sync model from project settings when project changes
     useEffect(() => {
         if (currentProject?.model_settings?.i2v_model) {
-            setParams(p => ({ ...p, model: currentProject.model_settings!.i2v_model }));
+            setParams(p => ({ ...p, model: normalizeVideoModel(currentProject.model_settings!.i2v_model) }));
         }
     }, [currentProject?.model_settings?.i2v_model]);
 

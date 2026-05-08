@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Cpu, Check, Plus, Loader2, X, Trash2 } from "lucide-react";
 import { api, type LocalLLMStatus, type CachedModelInfo, type EnvConfigPayload } from "@/lib/api";
 
-const DEFAULT_LOCAL_HF_ID = "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF";
+const DEFAULT_LOCAL_HF_ID = "anthfu/Qwen3.6-35B-A3B-APEX-GGUF";
 
 interface CloudModel {
     id: string;
